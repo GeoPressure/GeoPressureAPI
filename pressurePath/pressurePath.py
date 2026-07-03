@@ -73,17 +73,20 @@ class GP_pressurePath(GEE_Service):
         """
         super(GP_pressurePath, self).__init__(service_account, apiKeyFile, highvolume)
 
-        # Load reference geopotential and DEM data
-        geoPot = self.ee.Image(
+        geoPotLand = self.ee.Image(
             "projects/earthimages4unil/assets/PostDocProjects/rafnuss/Geopot_ERA5"
-        ).multiply(9.80665).rename("geopotential");
+        ).multiply(9.80665).rename("geopotential")
+        geoPotLevel = self.ee.Image("ECMWF/ERA5/HOURLY/20200101T00").select("geopotential")
 
-        def addGeopot(im):
-            return im.addBands(geoPot.updateMask(im.select("temperature_2m").mask()));
+        def addGeopotLand(im):
+            return im.addBands(geoPotLand.updateMask(im.select("temperature_2m").mask()))
+
+        def addGeopotLevel(im):
+            return im.addBands(geoPotLevel)
+
+        era5_land = self.ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY").map(addGeopotLand)
+        era5_single = self.ee.ImageCollection("ECMWF/ERA5/HOURLY").map(addGeopotLevel)
         
-        era5_land = self.ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY").map(addGeopot);
-        era5_single = self.ee.ImageCollection("ECMWF/ERA5/HOURLY")
-
         strToRemove=self.ee.String("_hourly");
 
         def removeHourly(str):

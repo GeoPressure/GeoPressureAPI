@@ -96,15 +96,19 @@ class GP_map_v2(GEE_Service):
         # Get the last available timestamp for ERA5 data to validate requests
         self.endERA5 = 1
        # Load reference geopotential and DEM data
-        geoPot = self.ee.Image(
+        geoPotLand = self.ee.Image(
             "projects/earthimages4unil/assets/PostDocProjects/rafnuss/Geopot_ERA5"
         ).multiply(9.80665).rename("geopotential")
+        geoPotLevel = self.ee.Image("ECMWF/ERA5/HOURLY/20200101T00").select("geopotential")
 
-        def addGeopot(im):
-            return im.addBands(geoPot.updateMask(im.select("temperature_2m").mask()))
+        def addGeopotLand(im):
+            return im.addBands(geoPotLand.updateMask(im.select("temperature_2m").mask()))
 
-        era5_land = self.ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY").map(addGeopot)
-        era5_single = self.ee.ImageCollection("ECMWF/ERA5/HOURLY")
+        def addGeopotLevel(im):
+            return im.addBands(geoPotLevel)
+
+        era5_land = self.ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY").map(addGeopotLand)
+        era5_single = self.ee.ImageCollection("ECMWF/ERA5/HOURLY").map(addGeopotLevel)
 
         # Rename hourly suffix to avoid band conflicts
         strToRemove = self.ee.String("_hourly")
