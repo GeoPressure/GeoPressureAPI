@@ -10,6 +10,20 @@ and uncertainty quantification.
 Author: GeoPressure Team
 """
 
+# import os
+# import logging
+# import http.client as http_client
+
+# http_client.HTTPConnection.debuglevel = 1
+
+# logging.basicConfig(level=logging.DEBUG)
+
+# logging.getLogger("urllib3").setLevel(logging.DEBUG)
+# logging.getLogger("urllib3").propagate = True
+# logging.getLogger("requests").setLevel(logging.DEBUG)
+# logging.getLogger("google.auth").setLevel(logging.DEBUG)
+# logging.getLogger("google.api_core").setLevel(logging.DEBUG)
+
 import datetime
 import json
 import math
@@ -130,7 +144,7 @@ class GP_map_v2(GEE_Service):
 
         # Keep the endERA5 timestamp check
         self.endERA5 = (
-            self.era5_land.filterDate("2022", "2100")
+            self.era5_land.filterDate("2024", "2100")
             .aggregate_max("system:time_start")
             .getInfo()
         )
