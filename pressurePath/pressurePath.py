@@ -141,7 +141,7 @@ class GP_pressurePath(GEE_Service):
         self.era5_single=era5_single;
 
     def getPressureAlongPath(  # Fixed typo: was "getPresureAlongPath"
-        self, path, time, pressure, variable, nbChunk=10, dataset="both"
+        self, path, time, pressure, variable, nbChunk=10, dataset="single-levels"
     ):
         """
         Extract atmospheric variables along a path with optional altitude computation.
@@ -404,7 +404,7 @@ class GP_pressurePath(GEE_Service):
             path = jsonObj["path"]
 
         # Process optional dataset parameter
-        dataset = "both"
+        dataset = "single-levels"
         if "dataset" in jsonObj.keys():
             if isinstance(jsonObj["dataset"], list):
                 dataset = jsonObj["dataset"][0]
