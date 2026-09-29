@@ -159,8 +159,10 @@ class GP_timeseries_v2(GEE_Service):
 
         # Load ERA5-LAND data for temperature and pressure
         ERA5 = self.ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY")
+        # Open the window an hour before the first measurement so that it can be
+        # matched to the closest image, not only to the next one.
         ERA5_pressure = ERA5.filterDate(  # Fixed typo: was "ERA5_pressur"
-            start, self.ee.Date(end).advance(1, "hour")
+            self.ee.Date(start).advance(-1, "hour"), self.ee.Date(end).advance(1, "hour")
         ).select(["surface_pressure", "temperature_2m"])
 
         # Match each measurement with closest ERA5 timestamp (within 1 hour)
