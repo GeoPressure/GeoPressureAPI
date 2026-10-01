@@ -231,6 +231,15 @@ Content-Type: application/json
 
 Extracts ERA5 variables at each `(lon, lat, time)` of a path and, if geolocator `pressure` is provided, computes its altitude with the barometric formula.
 
+### Altitude formula
+
+`altitude` is computed with the barometric formula, taking the reference level from ERA5 at the location and hour of each point (surface pressure, 2 m temperature and orography). `altitudeFormula` sets the temperature profile of the air column above it:
+
+- `"standard"` (default): 2 m temperature and the standard lapse rate of −6.5 K/km, as [`pressure_to_altitude()`](https://github.com/GeoPressure/GeoPressureR/blob/main/R/pressure_to_altitude.R) in GeoPressureR.
+- `"virtual"`: 2 m virtual temperature, which accounts for humidity (computed from `dewpoint_temperature_2m`), and a lapse rate varying with season and latitude, from −6.6 K/km in the tropics to about −3 K/km in a mid-latitude winter (capped at −2 K/km). The standard column is too cold, so it underestimates flight altitude by 1–1.5% of the height above the ground. Against 648 radiosonde stations, over the heights birds fly, `"virtual"` reduces the bias from −11.9 m to −2.3 m and the mean absolute error from 16.4 m to 13.0 m, and leaves the altitude on the ground unchanged.
+
+See the [altitude validation report](https://geopressure.github.io/altitude-validation/) for details.
+
 > [!WARNING]
 > **Use `dataset="single-levels"` (the default) whenever you need `altitude`.**
 > ERA5-Land's `surface_pressure` is not hydrostatically consistent with the orography ERA5-Land publishes — the two disagree by up to ~10 hPa in steep terrain — and that error passes straight into the retrieved altitude. Against 41,653 hourly observations from 271 NOAA ISD stations (2–3576 m, Alps, July 2020), every station-hour where both products have data:
@@ -251,6 +260,7 @@ Extracts ERA5 variables at each `(lon, lat, time)` of a path and, if geolocator 
 | `variable` | `string[]` | ✅ | | Earth Engine band names of [ERA5](https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_HOURLY#bands) or [ERA5-Land](https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_LAND_HOURLY#bands) (without the `_hourly` suffix), plus `altitude` |
 | `pressure` | `number[]` | | | Geolocator pressure (Pa), same length; enables `altitude` |
 | `dataset` | `string` | | `"single-levels"` | `"single-levels"` (ERA5), `"land"` (ERA5-Land) or `"both"` (ERA5 with ERA5-Land bands taking precedence) |
+| `altitudeFormula` | `string` | | `"standard"` | `"standard"` or `"virtual"` (see [Altitude formula](#altitude-formula)) |
 | `workers` | `number` | | `10` | Number of chunks processed in parallel |
 
 ### Response
