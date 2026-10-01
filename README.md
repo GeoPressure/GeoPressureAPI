@@ -235,8 +235,8 @@ Extracts ERA5 variables at each `(lon, lat, time)` of a path and, if geolocator 
 
 `altitude` is computed with the barometric formula, taking the reference level from ERA5 at the location and hour of each point (surface pressure, 2 m temperature and orography). `altitudeFormula` sets the temperature profile of the air column above it:
 
-- `"standard"` (default): 2 m temperature and the standard lapse rate of −6.5 K/km, as [`pressure_to_altitude()`](https://github.com/GeoPressure/GeoPressureR/blob/main/R/pressure_to_altitude.R) in GeoPressureR.
-- `"virtual"`: 2 m virtual temperature, which accounts for humidity (computed from `dewpoint_temperature_2m`), and a lapse rate varying with season and latitude, from −6.6 K/km in the tropics to about −3 K/km in a mid-latitude winter (capped at −2 K/km). The standard column is too cold, so it underestimates flight altitude by 1–1.5% of the height above the ground. Against 648 radiosonde stations, over the heights birds fly, `"virtual"` reduces the bias from −11.9 m to −2.3 m and the mean absolute error from 16.4 m to 13.0 m, and leaves the altitude on the ground unchanged.
+- `"virtual"` (default): 2 m virtual temperature, which accounts for humidity (computed from `dewpoint_temperature_2m`), and a lapse rate varying with season and latitude, from −6.6 K/km in the tropics to about −3 K/km in a mid-latitude winter (capped at −2 K/km). The standard column is too cold, so it underestimates flight altitude by 1–1.5% of the height above the ground. Against 648 radiosonde stations, over the heights birds fly, `"virtual"` reduces the bias from −11.9 m to −2.3 m and the mean absolute error from 16.4 m to 13.0 m, and leaves the altitude on the ground unchanged. It is the formula of [`pressure_to_altitude()`](https://github.com/GeoPressure/GeoPressureR/blob/main/R/pressure_to_altitude.R) in GeoPressureR.
+- `"standard"`: 2 m temperature and the standard lapse rate of −6.5 K/km, the formula used until 2026.
 
 See the [altitude validation report](https://geopressure.github.io/altitude-validation/) for details.
 
@@ -260,7 +260,7 @@ See the [altitude validation report](https://geopressure.github.io/altitude-vali
 | `variable` | `string[]` | ✅ | | Earth Engine band names of [ERA5](https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_HOURLY#bands) or [ERA5-Land](https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_LAND_HOURLY#bands) (without the `_hourly` suffix), plus `altitude` |
 | `pressure` | `number[]` | | | Geolocator pressure (Pa), same length; enables `altitude` |
 | `dataset` | `string` | | `"single-levels"` | `"single-levels"` (ERA5), `"land"` (ERA5-Land) or `"both"` (ERA5 with ERA5-Land bands taking precedence) |
-| `altitudeFormula` | `string` | | `"standard"` | `"standard"` or `"virtual"` (see [Altitude formula](#altitude-formula)) |
+| `altitudeFormula` | `string` | | `"virtual"` | `"virtual"` or `"standard"` (see [Altitude formula](#altitude-formula)) |
 | `workers` | `number` | | `10` | Number of chunks processed in parallel |
 
 ### Response

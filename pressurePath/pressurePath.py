@@ -40,17 +40,17 @@ DATASET_ALTITUDE_WARNING = (
 
 # Formulas available to convert pressure to altitude (request parameter
 # "altitudeFormula"):
-#   "standard": 2 m temperature and the ICAO lapse rate of -6.5 K/km, as GeoPressureR's
-#       pressure_to_altitude(). Default, so that source = "api" and source = "arco" in
-#       GeoPressureR keep giving the same altitude.
-#   "virtual": 2 m virtual temperature (from the 2 m dewpoint) and a lapse rate varying
-#       with season and latitude. The standard column is too cold, which underestimates
+#   "virtual" (default): 2 m virtual temperature (from the 2 m dewpoint) and a lapse rate
+#       varying with season and latitude, as GeoPressureR's pressure_to_altitude(). The
+#       column of the standard formula is too cold, which underestimates
 #       flight altitude by 1-1.5% of the height above the ground. Against 648 IGRA2
 #       radiosonde stations, weighted by the heights birds fly, this formula lowers the
 #       bias from -11.9 m to -2.3 m and the mean absolute error from 16.4 m to 13.0 m on
 #       held-out stations, without changing the altitude on the ground. See
 #       https://geopressure.github.io/altitude-validation/
-ALTITUDE_FORMULAS = ("standard", "virtual")
+#   "standard": 2 m temperature and the ICAO lapse rate of -6.5 K/km, the formula used
+#       until 2026.
+ALTITUDE_FORMULAS = ("virtual", "standard")
 
 # Lapse rate of the "virtual" formula, in K/km:
 #   L = b1 + b2 a + (b3 + b4 a) cos(2 pi (d - 15) / 365.25)
@@ -188,7 +188,7 @@ class GP_pressurePath(GEE_Service):
         variable,
         nbChunk=10,
         dataset="single-levels",
-        altitudeFormula="standard",
+        altitudeFormula="virtual",
     ):
         """
         Extract atmospheric variables along a path with optional altitude computation.
@@ -208,7 +208,7 @@ class GP_pressurePath(GEE_Service):
                 surface_pressure is not hydrostatically consistent with ERA5-LAND's own
                 orography, so "land" and "both" carry an altitude error of up to a few
                 hundred metres in steep terrain. See DATASET_ALTITUDE_WARNING.
-            altitudeFormula (str): "standard" (default) or "virtual". See
+            altitudeFormula (str): "virtual" (default) or "standard". See
                 ALTITUDE_FORMULAS.
 
         Returns:
@@ -473,7 +473,7 @@ class GP_pressurePath(GEE_Service):
             - dataset: "single-levels" (default), "land", or "both". "land" and "both"
               are kept for backward compatibility only and must not be used when
               altitude is requested; the response then carries a "warning" field.
-            - altitudeFormula: "standard" (default) or "virtual" (see ALTITUDE_FORMULAS)
+            - altitudeFormula: "virtual" (default) or "standard" (see ALTITUDE_FORMULAS)
             - workers: Number of processing chunks (default: 10)
         """
         timeStamp = math.floor(datetime.datetime.utcnow().timestamp())
@@ -524,14 +524,14 @@ class GP_pressurePath(GEE_Service):
                 dataset = jsonObj["dataset"]
 
         # Process optional altitudeFormula parameter
-        altitudeFormula = jsonObj.get("altitudeFormula", "standard")
+        altitudeFormula = jsonObj.get("altitudeFormula", "virtual")
         if isinstance(altitudeFormula, list):
             altitudeFormula = altitudeFormula[0]
         altitudeFormula = str(altitudeFormula).lower()
         if altitudeFormula not in ALTITUDE_FORMULAS:
             return printErrorMessage(
                 timeStamp,
-                'altitudeFormula must be "standard" or "virtual".',
+                'altitudeFormula must be "virtual" or "standard".',
             )
 
         # Process optional workers parameter
