@@ -243,9 +243,13 @@ class GP_pressurePath(GEE_Service):
             else:
                 ERA5 = self.ERA5Combined
 
-            # Filter ERA5 data by time range
+            # Filter ERA5 data by time range. The window must open an hour before the
+            # first point: the join matches each point to the closest image within one
+            # hour, and a point at 10:07 has to be able to reach the 10:00 image rather
+            # than being pushed to 11:00 because the window started at 10:07.
             ERA5_pressure = ERA5.filterDate(  # Fixed typo: was "ERA5_pressur"
-                start, self.ee.Date(end).advance(1, "hour")
+                self.ee.Date(start).advance(-1, "hour"),
+                self.ee.Date(end).advance(1, "hour"),
             )
 
             # Match each point with closest ERA5 timestamp (within 1 hour)
