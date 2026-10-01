@@ -16,6 +16,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from GEE_API_server import GEE_Service
+from altitude import ALTITUDE_FORMULAS, pressure_to_altitude
 
 # Get number of CPU cores for parallel processing
 numCores = os.cpu_count()
@@ -37,28 +38,6 @@ DATASET_ALTITUDE_WARNING = (
     'station barometers, versus 9 m for dataset="single-levels"). The returned '
     '"altitude" array should not be used. Use dataset="single-levels" instead.'
 )
-
-# Formulas available to convert pressure to altitude (request parameter
-# "altitudeFormula"):
-#   "virtual" (default): 2 m virtual temperature (from the 2 m dewpoint) and a lapse rate
-#       varying with season and latitude, as GeoPressureR's pressure_to_altitude(). The
-#       column of the standard formula is too cold, which underestimates
-#       flight altitude by 1-1.5% of the height above the ground. Against 648 IGRA2
-#       radiosonde stations, weighted by the heights birds fly, this formula lowers the
-#       bias from -11.9 m to -2.3 m and the mean absolute error from 16.4 m to 13.0 m on
-#       held-out stations, without changing the altitude on the ground. See
-#       https://geopressure.github.io/altitude-validation/
-#   "standard": 2 m temperature and the ICAO lapse rate of -6.5 K/km, the formula used
-#       until 2026.
-ALTITUDE_FORMULAS = ("virtual", "standard")
-
-# Lapse rate of the "virtual" formula, in K/km:
-#   L = b1 + b2 a + (b3 + b4 a) cos(2 pi (d - 15) / 365.25)
-# with a = |latitude| / 90 and d the day of year, shifted by six months in the southern
-# hemisphere: a mean lapse rate and a cycle peaking in mid-winter, both changing linearly
-# with latitude. Fitted on the IGRA2 radiosondes; L is kept between -9.5 and -2 K/km.
-LAPSE_COEF = (-6.6306, 3.7168, -0.0744, 3.1974)
-LAPSE_RANGE = (-9.5, -2.0)
 
 
 def printErrorMessage(task_id, errorMessage, adviceMessage="Double check the inputs."):
@@ -314,65 +293,16 @@ class GP_pressurePath(GEE_Service):
                 Returns:
                     Earth Engine Feature with sampled variables
                 """
-                # Physical constants for barometric formula
-                R = 8.31432  # Universal gas constant [J/mol/K]
-                g0 = 9.80665  # Gravitational acceleration [m/s²]
-                M = 0.0289644  # Molar mass of Earth's air [kg/mol]
-
                 im = self.ee.Image(ft.get("bestERA5"))
-                if altitudeFormula == "virtual":
-                    # 2 m virtual temperature Tv = T (1 + 0.608 q), with the specific
-                    # humidity q from the 2 m dewpoint and the vapour pressure from
-                    # Bolton (1980)
-                    td = im.select("dewpoint_temperature_2m").subtract(273.15)
-                    e = td.multiply(17.67).divide(td.add(243.5)).exp().multiply(611.2)
-                    T = im.expression(
-                        "T * (1 + 0.608 * 0.622 * e / (sp - 0.378 * e))",
-                        {
-                            "T": im.select("temperature_2m"),
-                            "sp": im.select("surface_pressure"),
-                            "e": e,
-                        },
-                    )
-                    # Lapse rate varying with season and latitude (see LAPSE_COEF)
-                    lat = ft.geometry().coordinates().getNumber(1)
-                    doy = (
-                        self.ee.Date(ft.get("system:time_start"))
-                        .getRelative("day", "year")
-                        .add(1)
-                    )
-                    sdoy = self.ee.Number(
-                        self.ee.Algorithms.If(
-                            lat.lt(0), doy.add(182).mod(365).add(1), doy
-                        )
-                    )
-                    a = lat.abs().divide(90)
-                    c = sdoy.subtract(15).multiply(2 * math.pi / 365.25).cos()
-                    b1, b2, b3, b4 = LAPSE_COEF
-                    Lb = (
-                        a.multiply(b2)
-                        .add(b1)
-                        .add(a.multiply(b4).add(b3).multiply(c))
-                        .clamp(*LAPSE_RANGE)
-                        .divide(1000)
-                    )
-                else:
-                    T = im.select("temperature_2m")
-                    Lb = self.ee.Number(-0.0065)  # Standard lapse rate [K/m]
-
-                # Calculate altitude using barometric formula
-                # h = (T/Lb) * ((P/P0)^(-R*Lb/g0/M) - 1) + h0
-                dh = (
-                    T.divide(Lb)
-                    .multiply(
-                        self.ee.Image.constant(self.ee.Number(ft.get("pressure")))
-                        .divide(im.select("surface_pressure"))
-                        .pow(Lb.multiply(-R / g0 / M))
-                        .subtract(1)
-                    )
-                    .add(im.select("geopotential").divide(g0))
-                    .rename("altitude")
-                )
+                dh = pressure_to_altitude(
+                    self.ee,
+                    ft.get("pressure"),
+                    im,
+                    im.select("geopotential").divide(9.80665),
+                    ft.geometry().coordinates().getNumber(1),
+                    ft.get("system:time_start"),
+                    altitudeFormula,
+                ).rename("altitude")
 
                 # Combine altitude with ERA5 variables and timestamp
                 return (
