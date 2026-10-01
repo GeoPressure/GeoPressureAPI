@@ -1,122 +1,101 @@
 # GeoPressureAPI
 
-[![Test Server](https://github.com/Rafnuss/GeoPressureAPI/actions/workflows/test-server.yml/badge.svg)](https://github.com/Rafnuss/GeoPressureAPI/actions/workflows/test-server.yml)
+[![Test Server](https://github.com/GeoPressure/GeoPressureAPI/actions/workflows/test-server.yml/badge.svg)](https://github.com/GeoPressure/GeoPressureAPI/actions/workflows/test-server.yml)
 
-## Overview
+GeoPressureAPI is a JSON API that compares geolocator pressure timeseries with atmospheric pressure from [ERA5](https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_HOURLY) and [ERA5-Land](https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_LAND_HOURLY) reanalysis, computed on Google Earth Engine. It is the backend of [GeoPressureR](https://github.com/GeoPressure/GeoPressureR).
 
-GeoPressureAPI is a JSON API that enables computation of pressure mismatch between geolocator pressure timeseries and atmospheric pressure from [ERA5-LAND reanalysis data](https://cds.climate.copernicus.eu/cdsapp#!/dataset/reanalysis-era5-land).
+Please [file an issue](https://github.com/GeoPressure/GeoPressureAPI/issues/new) if you find anything missing or wrong.
 
-This documentation describes how to use the GeoPressure API. Please [file an issue](https://github.com/Rafnuss/GeoPressureAPI/issues/new) if you find anything missing.
+## Endpoints
 
-## Available Endpoints
+| Endpoint | Description |
+| -------- | ----------- |
+| [`/map/`](#1-pressure-map) | Pressure mismatch maps (GeoTIFF) from geolocator data |
+| [`/timeseries/`](#2-pressure-timeseries) | ERA5-Land pressure timeseries at one location |
+| [`/elevationPath/`](#3-ground-elevation-along-a-path) | Ground elevation profile along a polyline |
+| [`/pressurePath/`](#4-pressure-data-along-a-path) | ERA5 variables and altitude along a path |
 
-The GeoPressure API provides four main endpoints:
+### Conventions
 
-| Endpoint                                                      | Description                                         |
-| ------------------------------------------------------------- | --------------------------------------------------- |
-| **[Pressure Map](#1-pressure-map)**                           | Compute pressure mismatch maps from geolocator data |
-| **[Pressure Timeseries](#2-pressure-timeseries)**             | Extract pressure timeseries at specific locations   |
-| **[Ground Elevation Path](#3-ground-elevation-along-a-path)** | Get elevation profiles along polylines              |
-| **[Pressure Data Path](#4-pressure-data-along-a-path)**       | Extract atmospheric variables along paths           |
+- **Base URL:** `https://glp.mgravey.com/GeoPressure/v2/`. Endpoint names are case-sensitive.
+- **Requests:** `POST` with a JSON body (`Content-Type: application/json`). The base URL answers with a `307` redirect to the service, so clients must follow redirects (e.g. `curl -L`).
+- **Units:** time as [UNIX timestamps](https://en.wikipedia.org/wiki/Unix_time) in seconds, pressure in Pa, coordinates in WGS84 degrees, distances and altitudes in m.
+- **Time matching:** each timestamp is paired with the closest ERA5 hour within ±1 h.
+- **Success:** `{"status": "success", "taskID": ..., "data": {...}}`. The fields documented below are inside `data`.
+- **Error:** HTTP `400` with `{"status": "error", "taskID": ..., "errorMessage": ..., "advice": ...}`.
 
 ---
 
 ## 1. Pressure Map
 
-**Endpoint:** `POST /glp.mgravey.com/GeoPressure/v2/map/`
+`POST https://glp.mgravey.com/GeoPressure/v2/map/`
 
-### Overview
+Computes, for each `label` (e.g. a stationary period), a map of pressure mismatch between the geolocator and ERA5. At most `maxSample` measurements are used per label, so long periods cost no more than short ones.
 
-Compute maps of pressure mismatch from geolocator pressure timeseries. Returns GeoTIFF maps with pressure mismatch analysis.
+### Request
 
-### Features
+| Parameter | Type | Required | Default | Description |
+| --------- | ---- | -------- | ------- | ----------- |
+| `W`, `S`, `E`, `N` | `number` | ✅ | | Bounding box (degrees) |
+| `time` | `number[]` | ✅ | | UNIX timestamps |
+| `pressure` | `number[]` | ✅ | | Geolocator pressure (Pa) |
+| `label` | `(string\|number)[]` | ✅ | | Grouping label of each measurement; one map per unique label |
+| `scale` | `number` | | `4` | Pixels per degree (4 = 0.25°, 10 = 0.1°). `(E-W)*scale` and `(N-S)*scale` must be integers |
+| `maxSample` | `number` | | `250` | Maximum measurements randomly sampled per label (`max_sample` also accepted) |
+| `margin` | `number` | | `30` | Altitude tolerance of the mask (m; 1 hPa ≈ 10 m) |
+| `includeMask` | `boolean` | | `true` | Return the mask band |
+| `maskThreshold` | `number` | | `0.9` | MSE pixels whose mask is below this value are set to `-1`; `0` disables |
+| `landDensityThreshold` | `number` | | `0` | Minimum land fraction (0–1) of an ERA5 pixel to be kept |
+| `dataset` | `string` | | `"single-levels"` | `"single-levels"`, `"land"` or `"both"` (see [§4](#4-pressure-data-along-a-path)) |
 
-- **MSE Layer**: Mean Square Error between geolocator and ERA5 pressure data (with mean error removed for altitude flexibility)
-- **Mask Layer** _(optional)_: Proportion of timeseries within ground elevation range using barometric formula and SRTM data
-- **Optimization**: Use `maskThreshold` to filter pixels and reduce computation time
-- **Data Source**: ERA5-Land (1981 to 3 months from real-time), 1-hour resolution
+### Response
 
-### Output Layers
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `format` | `string` | `"GEOTIFF"` |
+| `labels` | `(string\|number)[]` | Unique labels, in the same order as `urls` |
+| `urls` | `(string\|null)[]` | GeoTIFF download URL per label (`null` on failure) |
+| `errors` | `(string\|null)[]` | Reason for each `null` URL |
+| `resolution` | `number` | Pixel size (degrees) |
+| `size` | `number[]` | `[width, height]` in pixels |
+| `bbox` | `object` | `{W, S, E, N}` |
+| `time2GetUrls` | `number` | Time spent generating URLs (s) |
+| `includeMask`, `maskThreshold` | | Values applied |
 
-1. **MSE**: Pressure mismatch computed using [Mean Square Error](https://en.wikipedia.org/wiki/Mean_squared_error)
-2. **Mask**: Altitude feasibility based on [barometric formula](https://en.wikipedia.org/wiki/Barometric_formula) and [SRTM-90](https://developers.google.com/earth-engine/datasets/catalog/CGIAR_SRTM90_V4) elevation data
+If `time` extends past the last available ERA5 hour of the selected `dataset`, the request fails with HTTP `416` and a `lastERA5` field (ms).
 
-### Request Parameters
+Each GeoTIFF contains:
 
-| Parameter       | Type                 | Required | Default | Description                                                                           |
-| --------------- | -------------------- | -------- | ------- | ------------------------------------------------------------------------------------- |
-| `W`             | `number`             | ✅       |         | West coordinate (-180° to 180°)                                                       |
-| `S`             | `number`             | ✅       |         | South coordinate (-90° to 90°)                                                        |
-| `E`             | `number`             | ✅       |         | East coordinate (-180° to 180°)                                                       |
-| `N`             | `number`             | ✅       |         | North coordinate (-90° to 90°)                                                        |
-| `pressure`      | `number[]`           | ✅       |         | Atmospheric pressure values (Pascal)                                                  |
-| `time`          | `number[]`           | ✅       |         | [UNIX timestamps](https://en.wikipedia.org/wiki/Unix_time) (seconds since 1970-01-01) |
-| `label`         | `(string\|number)[]` | ✅       |         | Grouping labels for pressure data                                                     |
-| `scale`         | `number`             |          | `10`    | Pixels per degree (10 = 0.1°/~10km, 4 = 0.25°/~30km)                                  |
-| `maxSample`     | `number`             |          | `250`   | Maximum datapoints sampled per label; `max_sample` is also accepted                    |
-| `margin`        | `number`             |          | `30`    | Altitude error margin in meters (1hPa ≈ 10m)                                          |
-| `includeMask`   | `boolean`            |          | `true`  | Include mask layer in output                                                          |
-| `maskThreshold` | `number`             |          | `0.9`   | Filter pixels by mask value (0-1, e.g., 0.9 for 90%+ feasibility)                     |
-| `landDensityThreshold` | `number`       |          | `0`     | Minimum land-density threshold applied to ERA5 pixels                                 |
+- **Band 1 – MSE**: [mean square error](https://en.wikipedia.org/wiki/Mean_squared_error) between geolocator and ERA5 surface pressure, after removing the mean of each (so an unknown constant altitude offset does not matter).
+- **Band 2 – Mask** _(if `includeMask`)_: proportion of measurements whose altitude, from the [barometric formula](https://en.wikipedia.org/wiki/Barometric_formula), falls within the ground elevation range of the pixel (Copernicus GLO DEM min/max) ± `margin`.
+- **Special values:** `-1` below `maskThreshold`, `-2` water / no data.
 
-### Response Format
-
-| Field           | Type                 | Description                                    |
-| --------------- | -------------------- | ---------------------------------------------- |
-| `status`        | `string`             | `"success"` or `"error"`                       |
-| `taskID`        | `number`             | Unique task identifier                         |
-| `labels`        | `(string\|number)[]` | Unique labels in same order as URLs            |
-| `urls`          | `string[]`           | Download URLs for GeoTIFF files (`null` on failure) |
-| `errors`        | `(string\|null)[]`   | Reason each `null` url failed, same order as `urls` |
-| `resolution`    | `number`             | Map resolution in degrees                      |
-| `size`          | `number[]`           | Map dimensions [width, height]                 |
-| `bbox`          | `object`             | Bounding box coordinates                       |
-| `includeMask`   | `boolean`            | Whether mask layer is included                 |
-| `maskThreshold` | `number`             | Applied mask threshold                         |
-| `errorMessage`  | `string`             | Error description (if status = "error")        |
-| `advice`        | `string`             | Troubleshooting guidance (if status = "error") |
-
-### GeoTIFF Content
-
-Each URL returns a [GeoTIFF file](https://en.wikipedia.org/wiki/GeoTIFF) with:
-
-- **Band 1**: MSE values
-- **Band 2**: Mask values _(if `includeMask` = true)_
-
-**Special values:**
-
-- `-2`: Water/no data areas
-- `-1`: Pixels below mask threshold
-
-### Example Usage
+### Example
 
 ```http
-POST /glp.mgravey.com/GeoPressure/v2/map/
+POST https://glp.mgravey.com/GeoPressure/v2/map/
 Content-Type: application/json
 
 {
-  "W": -18,
-  "S": 4,
-  "E": 16,
-  "N": 51,
+  "W": -18, "S": 4, "E": 16, "N": 51,
   "time": [1572075000, 1572076800, 1572078600],
   "pressure": [97766, 97800, 97833],
   "label": [1, 1, 1]
 }
 ```
 
-**Response:**
-
 ```json
 {
   "status": "success",
   "taskID": 1639259414,
   "data": {
+    "format": "GEOTIFF",
     "labels": [1],
-    "urls": ["https://earthengine.googleapis.com/v1alpha/..."],
+    "urls": ["https://earthengine.googleapis.com/v1/..."],
+    "errors": [null],
     "resolution": 0.25,
-    "size": [136, 188],
     "bbox": { "W": -18, "S": 4, "E": 16, "N": 51 },
+    "size": [136, 188],
     "time2GetUrls": 11.61,
     "includeMask": true,
     "maskThreshold": 0.9
@@ -128,75 +107,54 @@ Content-Type: application/json
 
 ## 2. Pressure Timeseries
 
-**Endpoint:** `POST /glp.mgravey.com/GeoPressure/v2/timeseries/`
+`POST https://glp.mgravey.com/GeoPressure/v2/timeseries/`
 
-### Overview
+Returns the ERA5-Land surface pressure at one location, either over a time range or at the timestamps of a geolocator timeseries (which also returns its altitude). Locations over water are moved to the nearest ERA5-Land pixel within 1000 km.
 
-Extract pressure timeseries at a specific location, with optional altitude computation when geolocator pressure data is provided.
+> [!NOTE]
+> This endpoint always uses ERA5-Land, so its `altitude` carries the error described in [§4](#4-pressure-data-along-a-path). Use `/pressurePath/` with `dataset="single-levels"` for accurate altitude.
 
-### Features
+### Request
 
-- **Pressure extraction** at precise coordinates
-- **Altitude computation** using barometric formula (when pressure provided)
-- **Land fallback**: Automatically moves water coordinates to nearest land
-- **Flexible time ranges**: Use time arrays or start/end timestamps
+Provide either `time` + `pressure`, or `startTime` + `endTime`.
 
-### Request Parameters
+| Parameter | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `lon`, `lat` | `number` | ✅ | Location (degrees) |
+| `time` | `number[]` | ⚠️ | UNIX timestamps of the geolocator measurements |
+| `pressure` | `number[]` | ⚠️ | Geolocator pressure (Pa) |
+| `startTime`, `endTime` | `number` | ⚠️ | Time range (UNIX timestamps), used when `time`/`pressure` are absent |
 
-| Parameter   | Type       | Required | Description                                       |
-| ----------- | ---------- | -------- | ------------------------------------------------- |
-| `lon`       | `number`   | ✅       | Longitude coordinate (-180° to 180°)              |
-| `lat`       | `number`   | ✅       | Latitude coordinate (-90° to 90°)                 |
-| `pressure`  | `number[]` | ⚠️\*     | Geolocator pressure values (Pascal)               |
-| `time`      | `number[]` | ⚠️\*     | UNIX timestamps (required if `pressure` provided) |
-| `startTime` | `number`   | ⚠️\*\*   | Start timestamp (required if no `pressure`)       |
-| `endTime`   | `number`   | ⚠️\*\*   | End timestamp (required if no `pressure`)         |
+### Response
 
-_\* Required together_  
-_\*\* Required if `pressure` not provided_
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `format` | `string` | `"csv"` |
+| `url` | `string` | CSV download URL |
+| `lon`, `lat` | `number` | Location actually used |
+| `distInter` | `number` | Distance the location was moved (m; `0` if on land) |
 
-### Response Format
+The CSV has columns `time`, `pressure` (ERA5-Land) and, with geolocator `pressure`, `altitude`.
 
-| Field       | Type     | Description                                            |
-| ----------- | -------- | ------------------------------------------------------ |
-| `status`    | `string` | `"success"` or `"error"`                               |
-| `taskID`    | `number` | Unique task identifier                                 |
-| `url`       | `string` | CSV download URL                                       |
-| `distInter` | `number` | Distance to nearest land (meters, if moved from water) |
-| `lon`       | `number` | Actual longitude used                                  |
-| `lat`       | `number` | Actual latitude used                                   |
-
-### CSV Output Format
-
-| Column     | Description                                                |
-| ---------- | ---------------------------------------------------------- |
-| `time`     | UNIX timestamps                                            |
-| `pressure` | ERA5 pressure values                                       |
-| `altitude` | Computed altitude _(only if geolocator pressure provided)_ |
-
-### Example Usage
+### Example
 
 ```http
-POST /glp.mgravey.com/GeoPressure/v2/timeseries/
+POST https://glp.mgravey.com/GeoPressure/v2/timeseries/
 Content-Type: application/json
 
-{
-  "lon": 6,
-  "lat": 46,
-  "startTime": 1497916800,
-  "endTime": 1500667800
-}
+{ "lon": 6, "lat": 46, "startTime": 1497916800, "endTime": 1500667800 }
 ```
-
-**Response:**
 
 ```json
 {
   "status": "success",
   "taskID": 1639259414,
   "data": {
-    "url": "https://earthengine.googleapis.com/v1alpha/...",
-    "format": "csv"
+    "format": "csv",
+    "url": "https://earthengine-highvolume.googleapis.com/v1/...",
+    "lon": 6.0,
+    "lat": 46.0,
+    "distInter": 0
   }
 }
 ```
@@ -205,46 +163,34 @@ Content-Type: application/json
 
 ## 3. Ground Elevation Along a Path
 
-**Endpoint:** `POST /glp.mgravey.com/GeoPressure/v2/elevationPath/`
+`POST https://glp.mgravey.com/GeoPressure/v2/elevationPath/`
 
-### Overview
+Samples the ground elevation (Copernicus GLO DEM) at regular intervals along a polyline and returns percentiles of the elevation within each sampled pixel.
 
-Extract ground elevation statistics from [SRTM-90](https://developers.google.com/earth-engine/datasets/catalog/CGIAR_SRTM90_V4) data along a polyline path.
+### Request
 
-### Request Parameters
+| Parameter | Type | Required | Default | Description |
+| --------- | ---- | -------- | ------- | ----------- |
+| `lon`, `lat` | `number[]` | ✅ | | Path vertices (degrees). Alternatively `path` as `[[lon, lat], ...]` |
+| `scale` | `number` | ✅ | | DEM resolution (pixels per degree) |
+| `samplingScale` | `number` | ✅ | | Sampling interval along the path (samples per degree, i.e. every ~111 km / `samplingScale`) |
+| `percentile` | `number[]` | | `[10, 50, 90]` | Elevation percentiles; only `10, 20, …, 90` are available, others return empty arrays |
 
-| Parameter       | Type       | Required | Default        | Description                                   |
-| --------------- | ---------- | -------- | -------------- | --------------------------------------------- |
-| `lon`           | `number[]` | ✅       |                | Longitude coordinates (-180° to 180°)         |
-| `lat`           | `number[]` | ✅       |                | Latitude coordinates (-90° to 90°)            |
-| `scale`         | `number`   | ✅       |                | Elevation data resolution (pixels per degree) |
-| `samplingScale` | `number`   | ✅       |                | Path sampling resolution (pixels per degree)  |
-| `percentile`    | `number[]` |          | `[10, 50, 90]` | Elevation percentiles to compute (0-100)      |
+### Response
 
-### Response Format
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `percentileData` | `object` | One array per sampled point (see below) |
+| `scale` | `number` | DEM resolution (m) |
+| `samplingScale` | `number` | Sampling interval (m) |
+| `percentile` | `number[]` | Percentiles requested |
 
-| Field            | Type       | Description                               |
-| ---------------- | ---------- | ----------------------------------------- |
-| `status`         | `string`   | `"success"` or `"error"`                  |
-| `taskID`         | `number`   | Unique task identifier                    |
-| `percentileData` | `object`   | Elevation statistics and path information |
-| `scale`          | `number`   | Elevation data scale (meters per pixel)   |
-| `samplingScale`  | `number`   | Path sampling scale (meters per pixel)    |
-| `percentile`     | `number[]` | Computed percentiles                      |
+`percentileData` contains `"10"`, `"50"`, … (elevation, m), `lon`, `lat` (sample position), `distance` (cumulative distance along the path, m) and `stapId` (fractional index along the input vertices: `0` = first vertex, `1.5` = halfway between the second and third).
 
-### Percentile Data Object
-
-| Array                  | Description                             |
-| ---------------------- | --------------------------------------- |
-| `"10"`, `"50"`, `"90"` | Elevation values for each percentile    |
-| `distance`             | Cumulative distance along path (meters) |
-| `lat`, `lon`           | Resampled coordinates                   |
-| `stapId`               | Step position along path                |
-
-### Example Usage
+### Example
 
 ```http
-POST /glp.mgravey.com/GeoPressure/v2/elevationPath/
+POST https://glp.mgravey.com/GeoPressure/v2/elevationPath/
 Content-Type: application/json
 
 {
@@ -256,24 +202,22 @@ Content-Type: application/json
 }
 ```
 
-**Response:**
-
 ```json
 {
   "status": "success",
   "taskID": 1639259414,
   "data": {
     "percentileData": {
-      "10": [0, 0, 0, 305, 357, 289, 426, 399],
-      "50": [237, 237, 587, 552, 551, 363, 569, 553],
-      "90": [880, 880, 1260, 1138, 859, 480, 900, 756],
-      "distance": [0, 462486, 986718, 1886940, 2997968],
-      "lat": [44.927, 44.927, 34.943, 24.959, 14.976],
-      "lon": [4.992, 4.992, -4.992, 4.992, 14.976],
-      "stapId": [0, 1, 2, 3, 4]
+      "10": [199, 742, 1649, 556, 302, 566, ...],
+      "50": [206, 762, 1732, 600, 313, 587, ...],
+      "90": [213, 779, 1812, 641, 330, 607, ...],
+      "distance": [0, 111221, 222423, 333606, 444770, 462486, ...],
+      "lat": [48.917, 47.918, 46.92, 45.922, 44.923, 44.823, ...],
+      "lon": [8.444, 8.743, 8.943, 9.143, 9.343, 9.442, ...],
+      "stapId": [0, 0.24, 0.48, 0.72, 0.96, 1, ...]
     },
-    "scale": 1111390.0,
-    "samplingScale": 1111390.0,
+    "scale": 11113.9,
+    "samplingScale": 111139.0,
     "percentile": [10, 50, 90]
   }
 }
@@ -283,72 +227,42 @@ Content-Type: application/json
 
 ## 4. Pressure Data Along a Path
 
-**Endpoint:** `POST /glp.mgravey.com/GeoPressure/v2/pressurePath/`
+`POST https://glp.mgravey.com/GeoPressure/v2/pressurePath/`
 
-### Overview
-
-Extract atmospheric variables from ERA5/ERA5-LAND data along a path with optional altitude computation from geolocator pressure data.
-
-### Features
-
-- **Multi-variable extraction**: Any ERA5 atmospheric variables
-- **Dataset options**: ERA5 single-levels (default), ERA5-LAND, or combined
-- **Altitude computation**: When geolocator pressure provided
-- **Parallel processing**: Configurable workers for large datasets
+Extracts ERA5 variables at each `(lon, lat, time)` of a path and, if geolocator `pressure` is provided, computes its altitude with the barometric formula.
 
 > [!WARNING]
 > **Use `dataset="single-levels"` (the default) whenever you need `altitude`.**
-> ERA5-LAND's `surface_pressure` is not hydrostatically consistent with the orography
-> ERA5-LAND publishes — the two disagree by up to ~10 hPa in steep terrain. The
-> orography term therefore fails to cancel out of the barometric formula and the error
-> passes straight into the retrieved altitude. Measured against 41,653 hourly
-> station-pressure observations from 271 NOAA ISD stations (2–3576 m, Alps, July 2020)
-> — every station-hour where both products have data:
+> ERA5-Land's `surface_pressure` is not hydrostatically consistent with the orography ERA5-Land publishes — the two disagree by up to ~10 hPa in steep terrain — and that error passes straight into the retrieved altitude. Against 41,653 hourly observations from 271 NOAA ISD stations (2–3576 m, Alps, July 2020), every station-hour where both products have data:
 >
 > | `dataset` | bias | MAE | RMSE |
 > | --------- | ---- | --- | ---- |
 > | `"single-levels"` | −0.6 m | **9.0 m** | 27.4 m |
 > | `"land"` / `"both"` | +2.5 m | **55.3 m** | 76.9 m |
 >
-> `"land"` and `"both"` are retained for backward compatibility and remain fine for
-> variables other than `altitude`. When `pressure` is supplied together with one of
-> them, the response carries an extra `warning` field. ERA5-LAND has no atmospheric
-> analysis of its own — it is forced by ERA5 — so it holds no independent information
-> about absolute altitude.
+> `"land"` and `"both"` are kept for backward compatibility and remain fine for other variables. ERA5-Land is forced by ERA5, so it holds no independent information about absolute altitude.
 
-### Request Parameters
+### Request
 
-| Parameter  | Type       | Required | Default  | Description                                                                                    |
-| ---------- | ---------- | -------- | -------- | ---------------------------------------------------------------------------------------------- |
-| `lon`      | `number[]` | ✅       |          | Longitude coordinates (-180° to 180°)                                                          |
-| `lat`      | `number[]` | ✅       |          | Latitude coordinates (-90° to 90°)                                                             |
-| `time`     | `number[]` | ✅       |          | UNIX timestamps (must match coordinate array length)                                           |
-| `variable` | `string[]` | ✅       |          | [ERA5 variable names](https://cds.climate.copernicus.eu/cdsapp#!/dataset/reanalysis-era5-land) |
-| `pressure` | `number[]` |          |          | Geolocator pressure (Pascal, enables altitude computation)                                     |
-| `dataset`  | `string`   |          | `"single-levels"` | Data source: `"single-levels"`, `"land"`, or `"both"`. Use `"single-levels"` for altitude (see warning above) |
-| `workers`  | `number`   |          | `10`     | Parallel processing chunks                                                                     |
+| Parameter | Type | Required | Default | Description |
+| --------- | ---- | -------- | ------- | ----------- |
+| `lon`, `lat` | `number[]` | ✅ | | Positions (degrees). Alternatively `path` as `[[lon, lat], ...]` |
+| `time` | `number[]` | ✅ | | UNIX timestamps, same length as the positions |
+| `variable` | `string[]` | ✅ | | Earth Engine band names of [ERA5](https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_HOURLY#bands) or [ERA5-Land](https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_LAND_HOURLY#bands) (without the `_hourly` suffix), plus `altitude` |
+| `pressure` | `number[]` | | | Geolocator pressure (Pa), same length; enables `altitude` |
+| `dataset` | `string` | | `"single-levels"` | `"single-levels"` (ERA5), `"land"` (ERA5-Land) or `"both"` (ERA5 with ERA5-Land bands taking precedence) |
+| `workers` | `number` | | `10` | Number of chunks processed in parallel |
 
-### Response Format
+### Response
 
-| Field    | Type     | Description                 |
-| -------- | -------- | --------------------------- |
-| `status`  | `string` | `"success"` or `"error"`                                              |
-| `taskID`  | `number` | Unique task identifier                                                |
-| `data`    | `object` | Variable arrays (see below)                                           |
-| `warning` | `string` | _(only present)_ when `altitude` was computed from a `dataset` that cannot support it |
+`data` contains one array per requested variable, plus `time` (the input timestamps) and `altitude` (if `pressure` was provided). Points where any requested value is missing (e.g. over water with `"land"`) are dropped, so arrays can be shorter than the input.
 
-### Data Object Arrays
+When `pressure` is provided with `dataset="land"` or `"both"`, the response has an extra top-level `warning` field.
 
-| Array        | Description                                 |
-| ------------ | ------------------------------------------- |
-| `time`       | UNIX timestamps (closest ERA5 match)        |
-| `altitude`   | Computed altitudes _(if pressure provided)_ |
-| `{variable}` | One array per requested variable            |
-
-### Example Usage
+### Example
 
 ```http
-POST /glp.mgravey.com/GeoPressure/v2/pressurePath/
+POST https://glp.mgravey.com/GeoPressure/v2/pressurePath/
 Content-Type: application/json
 
 {
@@ -356,96 +270,58 @@ Content-Type: application/json
   "lat": [48.5, 48.5, 48.5, 41.6, 41.6],
   "time": [1501113600, 1501115400, 1501117200, 1501745400, 1501747200],
   "variable": ["surface_pressure", "temperature_2m"],
-  "dataset": "single-levels",
   "pressure": [98900, 99200, 99400, 100000, 100100],
   "workers": 1
 }
 ```
-
-**Response:**
 
 ```json
 {
   "status": "success",
   "taskID": 1639259414,
   "data": {
-    "time": [1501113600, 1501115400, 1501117200, 1501745400, 1501747200],
-    "altitude": [1234.5, 1245.2, 1256.8, 1290.7, 1301.2],
-    "surface_pressure": [98765, 98823, 98881, 99055, 99113],
-    "temperature_2m": [285.4, 286.1, 286.8, 288.9, 289.6]
+    "altitude": [151.1, 125.5, 107.6, 90.1, 80.1],
+    "surface_pressure": [97973, 97973, 97963.9, 96977.1, 96969.7],
+    "temperature_2m": [288.19, 288.19, 288.45, 295.59, 296.25],
+    "time": [1501113600, 1501115400, 1501117200, 1501745400, 1501747200]
   }
 }
 ```
 
 ---
 
-## Installation
+## Data Sources & Accuracy
 
-The map service currently uses the standard Google Earth Engine endpoint rather than
-the high-volume endpoint.
-
-The map service loads only the ERA5 hourly images its samples can actually match (the
-hour below and above each sampled measurement), rather than every hour a label spans.
-Stationary periods of any length therefore cost the same as short ones, for every
-`dataset`.
-
-### Server Setup
-
-1. **Clone repository**
-
-   ```bash
-   git clone https://github.com/Rafnuss/GeoPressureAPI
-   ```
-
-2. **Add authentication**
-
-   - Place Google Earth Engine service account JSON key in repository
-
-3. **Configure server**
-
-   - Update `bootServer.sh` with service address
-   - Create `logs` directory
-
-4. **Network routing** _(if needed)_
-
-   ```bash
-   sudo iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 80
-   sudo iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 443
-   ```
-
-5. **Start server**
-   ```bash
-   bash bootServer.sh
-   ```
-
----
-
-## Data Sources & Limitations
-
-- **ERA5-LAND**: 1981 to ~3 months from real-time
-- **ERA5 single-levels**: 1940 to ~5 days from real-time
-- **Time resolution**: 1 hour (use closest match for any timestamp)
-- **Spatial coverage**: Global land areas
-- **Coordinate systems**: WGS84 (EPSG:4326)
+- **ERA5 single levels**: hourly, ~0.25°, 1940 to ~1 week before present, global.
+- **ERA5-Land**: hourly, ~0.1°, 1950 to ~1 week before present, land only.
+- **Ground elevation**: Copernicus GLO DEM, pre-aggregated at several resolutions.
 
 ### Accuracy of retrieved altitude
 
-Validated against real barometers (293 NOAA ISD stations, 2–3576 m, 44,163 hourly
-observations). With `dataset="single-levels"` the error separates into two parts that
-behave very differently:
+Validated against real barometers (293 NOAA ISD stations, 2–3576 m, 44,163 hourly observations) with `dataset="single-levels"`. The error has two parts:
 
 | Component | Size | Notes |
 | --------- | ---- | ----- |
 | Static per-site offset | median 3.7 m, p90 15 m | station metadata + sub-grid terrain; constant in time |
 | Temporal scatter | median SD **3.1 m**, p90 7.7 m | the actual reanalysis error |
 
-So expect **~3 m for relative altitude changes at a fixed location** and **~10 m mean
-absolute error for absolute altitude**, degrading to tens of metres in steep terrain —
-and that last part is a fixed offset, not noise. Precision is nearly independent of
-flight altitude: de-biased RMSE stays 2–7 m up to 1000 m above the model surface and
-~12 m at 1000–3000 m above it.
+Expect **~3 m for relative altitude changes at a fixed location** and **~10 m mean absolute error for absolute altitude**, degrading to tens of metres in steep terrain — as a fixed offset, not noise. Precision is nearly independent of flight altitude: de-biased RMSE stays 2–7 m up to 1000 m above the model surface and ~12 m at 1000–3000 m above it.
 
-For more information, see:
+---
 
-- [ERA5-LAND documentation](https://cds.climate.copernicus.eu/cdsapp#!/dataset/reanalysis-era5-land)
-- [Google Earth Engine ERA5 dataset](https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_LAND_HOURLY)
+## Deployment
+
+Each folder (`map/`, `timeseries/`, `elevationPath/`, `pressurePath/`) is a standalone [Google Cloud Function](https://cloud.google.com/functions) (Python, `functions-framework`) with its own `requirements.txt`. The entry point has the same name as the folder (e.g. `pressurePath`).
+
+Each function authenticates to Earth Engine with a service account read from two environment variables:
+
+- `GEE_API_ADDRESS`: service account email
+- `GEE_API_KEY`: service account private key
+
+To run one locally:
+
+```bash
+cd pressurePath && pip install -r requirements.txt && functions-framework --target=pressurePath
+```
+
+`map` uses the standard Earth Engine endpoint; the other services use the high-volume endpoint. The [Test Server](.github/workflows/test-server.yml) workflow calls the live endpoints every 12 hours.
