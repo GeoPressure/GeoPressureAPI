@@ -11,7 +11,7 @@ Please [file an issue](https://github.com/GeoPressure/GeoPressureAPI/issues/new)
 | Endpoint | Description |
 | -------- | ----------- |
 | [`/map/`](#1-pressure-map) | Pressure mismatch maps (GeoTIFF) from geolocator data |
-| [`/timeseries/`](#2-pressure-timeseries) | ERA5-Land pressure timeseries at one location |
+| [`/timeseries/`](#2-pressure-timeseries) | ERA5 pressure timeseries at one location |
 | [`/elevationPath/`](#3-ground-elevation-along-a-path) | Ground elevation profile along a polyline |
 | [`/pressurePath/`](#4-pressure-data-along-a-path) | ERA5 variables and altitude along a path |
 
@@ -109,10 +109,9 @@ Content-Type: application/json
 
 `POST https://glp.mgravey.com/GeoPressure/v2/timeseries/`
 
-Returns the ERA5-Land surface pressure at one location, either over a time range or at the timestamps of a geolocator timeseries (which also returns its altitude). Locations over water are moved to the nearest ERA5-Land pixel within 1000 km.
+Returns ERA5 surface pressure at one location, either over a time range or at the timestamps of a geolocator timeseries (which also returns its altitude). `dataset="single-levels"` is the default and retains locations over water. With `dataset="land"`, ocean locations are moved to the nearest ERA5-Land pixel within 1000 km.
 
-> [!NOTE]
-> This endpoint always uses ERA5-Land, so its `altitude` carries the error described in [§4](#4-pressure-data-along-a-path). Use `/pressurePath/` with `dataset="single-levels"` for accurate altitude.
+Altitude defaults to `altitudeFormula="virtual"`, using the same humidity correction and seasonal, latitude-dependent lapse rate as [`/pressurePath/`](#altitude-formula) and GeoPressureR, based on the [altitude validation](https://github.com/GeoPressure/altitude-validation). `altitudeFormula="standard"` retains the previous temperature profile. Use `dataset="single-levels"` for altitude because ERA5-Land pressure and orography are inconsistent.
 
 ### Request
 
@@ -124,6 +123,8 @@ Provide either `time` + `pressure`, or `startTime` + `endTime`.
 | `time` | `number[]` | ⚠️ | UNIX timestamps of the geolocator measurements |
 | `pressure` | `number[]` | ⚠️ | Geolocator pressure (Pa) |
 | `startTime`, `endTime` | `number` | ⚠️ | Time range (UNIX timestamps), used when `time`/`pressure` are absent |
+| `dataset` | `string` | | `"single-levels"` (default) or `"land"` |
+| `altitudeFormula` | `string` | | `"virtual"` (default) or `"standard"` |
 
 ### Response
 
@@ -134,7 +135,7 @@ Provide either `time` + `pressure`, or `startTime` + `endTime`.
 | `lon`, `lat` | `number` | Location actually used |
 | `distInter` | `number` | Distance the location was moved (m; `0` if on land) |
 
-The CSV has columns `time`, `pressure` (ERA5-Land) and, with geolocator `pressure`, `altitude`.
+The CSV has columns `time`, `pressure` (ERA5 surface pressure) and, with geolocator `pressure`, `altitude`.
 
 ### Example
 
@@ -231,6 +232,15 @@ Content-Type: application/json
 
 Extracts ERA5 variables at each `(lon, lat, time)` of a path and, if geolocator `pressure` is provided, computes its altitude with the barometric formula.
 
+### Altitude formula
+
+`altitude` is computed with the barometric formula, taking the reference level from ERA5 at the location and hour of each point (surface pressure, 2 m temperature and orography). `altitudeFormula` sets the temperature profile of the air column above it:
+
+- `"virtual"` (default): 2 m virtual temperature, which accounts for humidity (computed from `dewpoint_temperature_2m`), and a lapse rate varying with season and latitude, from −6.6 K/km in the tropics to about −3 K/km in a mid-latitude winter (capped at −2 K/km). The standard column is too cold, so it underestimates flight altitude by 1–1.5% of the height above the ground. Against 648 radiosonde stations, over the heights birds fly, `"virtual"` reduces the bias from −11.9 m to −2.3 m and the mean absolute error from 16.4 m to 13.0 m, and leaves the altitude on the ground unchanged. It is the formula of [`pressure_to_altitude()`](https://github.com/GeoPressure/GeoPressureR/blob/main/R/pressure_to_altitude.R) in GeoPressureR.
+- `"standard"`: 2 m temperature and the standard lapse rate of −6.5 K/km, the formula used until 2026.
+
+See the [altitude validation report](https://geopressure.github.io/altitude-validation/) for details.
+
 > [!WARNING]
 > **Use `dataset="single-levels"` (the default) whenever you need `altitude`.**
 > ERA5-Land's `surface_pressure` is not hydrostatically consistent with the orography ERA5-Land publishes — the two disagree by up to ~10 hPa in steep terrain — and that error passes straight into the retrieved altitude. Against 41,653 hourly observations from 271 NOAA ISD stations (2–3576 m, Alps, July 2020), every station-hour where both products have data:
@@ -251,6 +261,7 @@ Extracts ERA5 variables at each `(lon, lat, time)` of a path and, if geolocator 
 | `variable` | `string[]` | ✅ | | Earth Engine band names of [ERA5](https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_HOURLY#bands) or [ERA5-Land](https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_LAND_HOURLY#bands) (without the `_hourly` suffix), plus `altitude` |
 | `pressure` | `number[]` | | | Geolocator pressure (Pa), same length; enables `altitude` |
 | `dataset` | `string` | | `"single-levels"` | `"single-levels"` (ERA5), `"land"` (ERA5-Land) or `"both"` (ERA5 with ERA5-Land bands taking precedence) |
+| `altitudeFormula` | `string` | | `"virtual"` | `"virtual"` or `"standard"` (see [Altitude formula](#altitude-formula)) |
 | `workers` | `number` | | `10` | Number of chunks processed in parallel |
 
 ### Response
@@ -313,6 +324,15 @@ Expect **~3 m for relative altitude changes at a fixed location** and **~10 m me
 
 Each folder (`map/`, `timeseries/`, `elevationPath/`, `pressurePath/`) is a standalone [Google Cloud Function](https://cloud.google.com/functions) (Python, `functions-framework`) with its own `requirements.txt`. The entry point has the same name as the folder (e.g. `pressurePath`).
 
+The virtual formula and its fitted coefficients are defined once in `altitude.py`, shared by `pressurePath` and `timeseries`. Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
+
+Stage a function before deployment so its source includes the shared module:
+
+```bash
+python scripts/prepare_function.py pressurePath /tmp/pressurePath-source
+# Use /tmp/pressurePath-source as the deployment source directory.
+```
+
 Each function authenticates to Earth Engine with a service account read from two environment variables:
 
 - `GEE_API_ADDRESS`: service account email
@@ -321,7 +341,7 @@ Each function authenticates to Earth Engine with a service account read from two
 To run one locally:
 
 ```bash
-cd pressurePath && pip install -r requirements.txt && functions-framework --target=pressurePath
+cd pressurePath && pip install -r requirements.txt && PYTHONPATH=.. functions-framework --target=pressurePath
 ```
 
 `map` uses the standard Earth Engine endpoint; the other services use the high-volume endpoint. The [Test Server](.github/workflows/test-server.yml) workflow calls the live endpoints every 12 hours.

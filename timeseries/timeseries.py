@@ -2,7 +2,7 @@
 """
 GeoPressure API - Timeseries Module
 
-This module provides functionality to extract time series data from ERA5-LAND atmospheric
+This module provides functionality to extract time series data from ERA5 atmospheric
 reanalysis for specific coordinates. It supports both time-bounded extraction and explicit
 pressure-based altitude computation using the barometric formula.
 
@@ -15,6 +15,8 @@ import math
 import os
 
 from GEE_API_server import GEE_Service
+from altitude import ALTITUDE_FORMULAS, pressure_to_altitude
+
 
 
 def printErrorMessage(task_id, errorMessage, adviceMessage="Double check the inputs"):
@@ -47,29 +49,30 @@ class GP_timeseries_v2(GEE_Service):
     """
     GeoPressure Timeseries Analysis Class
 
-    Extracts atmospheric pressure time series from ERA5-LAND data at specific coordinates.
+    Extracts atmospheric pressure time series from ERA5 or ERA5-Land at specific coordinates.
     Supports both simple time-bounded extraction and pressure-based altitude computation
     for geolocator analysis.
 
     Features:
-    - ERA5-LAND hourly atmospheric data extraction
+    - ERA5 single-levels (default) and ERA5-Land hourly atmospheric data extraction
     - Time-bounded pressure series generation
     - Pressure-based altitude computation using barometric formula
     - Automatic land/ocean detection with nearest land interpolation
     - CSV export functionality
     """
 
-    def boundingTimeCollection(self, timeStart, timeEnd, coordinates):
+    def boundingTimeCollection(self, timeStart, timeEnd, coordinates, dataset="single-levels"):
         """
         Extract pressure time series within a specified time range.
 
-        This method extracts all available ERA5-LAND pressure data between
+        This method extracts all available ERA5 pressure data between
         start and end timestamps for a given coordinate location.
 
         Args:
             timeStart (int): Start timestamp in milliseconds since epoch
             timeEnd (int): End timestamp in milliseconds since epoch
             coordinates (list): [longitude, latitude] pair
+            dataset (str): "single-levels" (default) or "land"
 
         Returns:
             str: Download URL for CSV containing time and pressure columns
@@ -93,9 +96,11 @@ class GP_timeseries_v2(GEE_Service):
                 .toLong()
             ).sample(region=self.ee.Geometry.Point(coordinates), scale=10, numPixels=1)
 
-        # Load ERA5-LAND pressure data for specified time range
+        # Load the selected ERA5 pressure product
         ERA5_pressure = (  # Fixed typo: was "ERA5_pressur"
-            self.ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY")
+            self.ee.ImageCollection(
+                "ECMWF/ERA5_LAND/HOURLY" if dataset == "land" else "ECMWF/ERA5/HOURLY"
+            )
             .filterDate(timeStart, self.ee.Date(timeEnd).advance(1, "hour"))
             .select(["surface_pressure"], ["pressure"])
         )
@@ -110,7 +115,7 @@ class GP_timeseries_v2(GEE_Service):
         return url
 
     def explicitTimeCollection(
-        self, time, pressure, coordinates
+        self, time, pressure, coordinates, dataset="single-levels", altitudeFormula="virtual"
     ):  # Fixed typo: was "expliciteTimeCollection"
         """
         Compute altitude time series from explicit pressure measurements.
@@ -123,6 +128,8 @@ class GP_timeseries_v2(GEE_Service):
             time (list): Array of UNIX timestamps (seconds since epoch)
             pressure (list): Array of pressure measurements in Pascal
             coordinates (list): [longitude, latitude] pair
+            dataset (str): "single-levels" (default) or "land"
+            altitudeFormula (str): "virtual" (default) or "standard"
 
         Returns:
             str: Download URL for CSV containing time, pressure, and altitude
@@ -157,11 +164,13 @@ class GP_timeseries_v2(GEE_Service):
         start = feature_collection.aggregate_min("system:time_start")
         end = feature_collection.aggregate_max("system:time_start")
 
-        # Load ERA5-LAND data for temperature and pressure
-        ERA5 = self.ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY")
+        # Load the selected ERA5 product for pressure, temperature and humidity
+        ERA5 = self.ee.ImageCollection(
+            "ECMWF/ERA5_LAND/HOURLY" if dataset == "land" else "ECMWF/ERA5/HOURLY"
+        )
         ERA5_pressure = ERA5.filterDate(  # Fixed typo: was "ERA5_pressur"
-            start, self.ee.Date(end).advance(1, "hour")
-        ).select(["surface_pressure", "temperature_2m"])
+            self.ee.Date(start).advance(-1, "hour"), self.ee.Date(end).advance(1, "hour")
+        ).select(["surface_pressure", "temperature_2m", "dewpoint_temperature_2m"])
 
         # Match each measurement with closest ERA5 timestamp (within 1 hour)
         era5_labelFeature = (
@@ -186,7 +195,7 @@ class GP_timeseries_v2(GEE_Service):
             accounting for temperature variation and geopotential height from ERA5.
 
             Physical constants from standard atmosphere:
-            - Lb: Standard temperature lapse rate (-6.5 K/km)
+            - Lb: Seasonal and latitude-dependent lapse rate, or -6.5 K/km for standard
             - R: Universal gas constant (8.31432 J/mol/K)
             - g0: Standard gravity (9.80665 m/s²)
             - M: Molar mass of dry air (0.0289644 kg/mol)
@@ -197,37 +206,21 @@ class GP_timeseries_v2(GEE_Service):
             Returns:
                 Earth Engine FeatureCollection with altitude, pressure, and time
             """
-            # Physical constants for barometric formula
-            Lb = -0.0065  # Standard temperature lapse rate [K/m]
-            R = 8.31432  # Universal gas constant [J/mol/K]
-            g0 = 9.80665  # Gravitational acceleration [m/s²]
-            M = 0.0289644  # Molar mass of Earth's air [kg/mol]
-            T0 = 273.15 + 15  # Standard sea level temperature [K]
-
-            # Load reference geopotential height
-            altIm = self.ee.Image(
-                "projects/earthimages4unil/assets/PostDocProjects/rafnuss/Geopot_ERA5"
+            im = self.ee.Image(feature.get("bestERA5"))
+            elevation = (
+                self.ee.Image("projects/earthimages4unil/assets/PostDocProjects/rafnuss/Geopot_ERA5")
+                if dataset == "land"
+                else self.ee.Image("ECMWF/ERA5/HOURLY/20200101T00").select("geopotential").divide(9.80665)
             )
-
-            # Calculate altitude using barometric formula
-            # h = (T/Lb) * ((P/P0)^(-R*Lb/g0/M) - 1) + h0
-            dh = (
-                self.ee.Image(feature.get("bestERA5"))
-                .select("temperature_2m")
-                .divide(Lb)
-                .multiply(
-                    self.ee.Image.constant(self.ee.Number(feature.get("pressure")))
-                    .divide(
-                        self.ee.Image(feature.get("bestERA5")).select(
-                            "surface_pressure"
-                        )
-                    )
-                    .pow(-R * Lb / g0 / M)
-                    .subtract(1)
-                )
-                .add(altIm)
-                .rename("altitude")
-            )
+            dh = pressure_to_altitude(
+                self.ee,
+                feature.get("pressure"),
+                im,
+                elevation,
+                coordinates[1],
+                feature.get("system:time_start"),
+                altitudeFormula,
+            ).rename("altitude")
 
             # Combine altitude with pressure and timestamp data
             return (
@@ -339,6 +332,10 @@ class GP_timeseries_v2(GEE_Service):
         Time-bounded mode (requires):
             - startTime, endTime: UNIX timestamps for data range
 
+        Optional Parameters:
+            - dataset: "single-levels" (default) or "land"
+            - altitudeFormula: "virtual" (default) or "standard"
+
         Pressure-based mode (requires):
             - time: Array of UNIX timestamps
             - pressure: Array of pressure measurements in Pascal
@@ -360,6 +357,20 @@ class GP_timeseries_v2(GEE_Service):
             lat = float(jsonObj["lat"])
         except (ValueError, TypeError):
             return printErrorMessage(timeStamp, "Latitude is not a valid float number")
+
+        dataset = jsonObj.get("dataset", "single-levels")
+        if isinstance(dataset, list):
+            dataset = dataset[0]
+        dataset = str(dataset).lower()
+        if dataset not in ("single-levels", "land"):
+            return printErrorMessage(timeStamp, 'dataset must be "single-levels" or "land".')
+
+        altitudeFormula = jsonObj.get("altitudeFormula", "virtual")
+        if isinstance(altitudeFormula, list):
+            altitudeFormula = altitudeFormula[0]
+        altitudeFormula = str(altitudeFormula).lower()
+        if altitudeFormula not in ALTITUDE_FORMULAS:
+            return printErrorMessage(timeStamp, 'altitudeFormula must be "virtual" or "standard".')
 
         # Determine request mode based on available parameters
         informedTimeSeries = False
@@ -394,13 +405,15 @@ class GP_timeseries_v2(GEE_Service):
 
         try:
             # Validate and adjust coordinates if necessary
-            lon, lat, dist, change = self.checkPosition([lon, lat])
+            dist = 0
+            if dataset == "land":
+                lon, lat, dist, change = self.checkPosition([lon, lat])
 
             # Process request based on mode
             if informedTimeSeries:
-                url = self.explicitTimeCollection(time, pressure, [lon, lat])
+                url = self.explicitTimeCollection(time, pressure, [lon, lat], dataset, altitudeFormula)
             else:
-                url = self.boundingTimeCollection(timeStart, timeEnd, [lon, lat])
+                url = self.boundingTimeCollection(timeStart, timeEnd, [lon, lat], dataset)
 
             # Prepare successful response
             response = {

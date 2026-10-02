@@ -16,6 +16,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from GEE_API_server import GEE_Service
+from altitude import ALTITUDE_FORMULAS, pressure_to_altitude
 
 # Get number of CPU cores for parallel processing
 numCores = os.cpu_count()
@@ -159,7 +160,14 @@ class GP_pressurePath(GEE_Service):
         self.era5_single=era5_single;
 
     def getPressureAlongPath(  # Fixed typo: was "getPresureAlongPath"
-        self, path, time, pressure, variable, nbChunk=10, dataset="single-levels"
+        self,
+        path,
+        time,
+        pressure,
+        variable,
+        nbChunk=10,
+        dataset="single-levels",
+        altitudeFormula="virtual",
     ):
         """
         Extract atmospheric variables along a path with optional altitude computation.
@@ -179,6 +187,8 @@ class GP_pressurePath(GEE_Service):
                 surface_pressure is not hydrostatically consistent with ERA5-LAND's own
                 orography, so "land" and "both" carry an altitude error of up to a few
                 hundred metres in steep terrain. See DATASET_ALTITUDE_WARNING.
+            altitudeFormula (str): "virtual" (default) or "standard". See
+                ALTITUDE_FORMULAS.
 
         Returns:
             dict: Arrays for time, variables, and altitude (if pressure provided)
@@ -271,7 +281,8 @@ class GP_pressurePath(GEE_Service):
                 accounting for temperature variation and geopotential height from ERA5.
 
                 Physical constants from standard atmosphere:
-                - Lb: Standard temperature lapse rate (-6.5 K/km)
+                - Lb: Temperature lapse rate (-6.5 K/km, or varying with season and
+                  latitude for altitudeFormula="virtual")
                 - R: Universal gas constant (8.31432 J/mol/K)
                 - g0: Standard gravity (9.80665 m/s²)
                 - M: Molar mass of dry air (0.0289644 kg/mol)
@@ -282,30 +293,16 @@ class GP_pressurePath(GEE_Service):
                 Returns:
                     Earth Engine Feature with sampled variables
                 """
-                # Physical constants for barometric formula
-                Lb = -0.0065  # Standard temperature lapse rate [K/m]
-                R = 8.31432  # Universal gas constant [J/mol/K]
-                g0 = 9.80665  # Gravitational acceleration [m/s²]
-                M = 0.0289644  # Molar mass of Earth's air [kg/mol]
-
-                # Calculate altitude using barometric formula
-                # h = (T/Lb) * ((P/P0)^(-R*Lb/g0/M) - 1) + h0
-                im=self.ee.Image(ft.get("bestERA5"));
-                dh = (
-                    im
-                    .select("temperature_2m")
-                    .divide(Lb)
-                    .multiply(
-                        self.ee.Image.constant(self.ee.Number(ft.get("pressure")))
-                        .divide(
-                            self.ee.Image(ft.get("bestERA5")).select("surface_pressure")
-                        )
-                        .pow(-R * Lb / g0 / M)
-                        .subtract(1)
-                    )
-                    .add(im.select("geopotential").divide(g0))
-                    .rename("altitude")
-                )
+                im = self.ee.Image(ft.get("bestERA5"))
+                dh = pressure_to_altitude(
+                    self.ee,
+                    ft.get("pressure"),
+                    im,
+                    im.select("geopotential").divide(9.80665),
+                    ft.geometry().coordinates().getNumber(1),
+                    ft.get("system:time_start"),
+                    altitudeFormula,
+                ).rename("altitude")
 
                 # Combine altitude with ERA5 variables and timestamp
                 return (
@@ -406,6 +403,7 @@ class GP_pressurePath(GEE_Service):
             - dataset: "single-levels" (default), "land", or "both". "land" and "both"
               are kept for backward compatibility only and must not be used when
               altitude is requested; the response then carries a "warning" field.
+            - altitudeFormula: "virtual" (default) or "standard" (see ALTITUDE_FORMULAS)
             - workers: Number of processing chunks (default: 10)
         """
         timeStamp = math.floor(datetime.datetime.utcnow().timestamp())
@@ -455,6 +453,17 @@ class GP_pressurePath(GEE_Service):
             else:
                 dataset = jsonObj["dataset"]
 
+        # Process optional altitudeFormula parameter
+        altitudeFormula = jsonObj.get("altitudeFormula", "virtual")
+        if isinstance(altitudeFormula, list):
+            altitudeFormula = altitudeFormula[0]
+        altitudeFormula = str(altitudeFormula).lower()
+        if altitudeFormula not in ALTITUDE_FORMULAS:
+            return printErrorMessage(
+                timeStamp,
+                'altitudeFormula must be "virtual" or "standard".',
+            )
+
         # Process optional workers parameter
         workers = 10
         if "workers" in jsonObj.keys():
@@ -477,7 +486,7 @@ class GP_pressurePath(GEE_Service):
         try:
             # Process the request
             data = self.getPressureAlongPath(  # Fixed method name
-                path, time, pressure, variable, workers, dataset
+                path, time, pressure, variable, workers, dataset, altitudeFormula
             )
             response = {"status": "success", "taskID": timeStamp, "data": data}
             # Altitude from ERA5-LAND is unreliable; say so rather than returning a
