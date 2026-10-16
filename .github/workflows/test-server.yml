@@ -6,6 +6,11 @@ on:
     - cron: "0 */12 * * *" # Runs at minute 0 every 12th hour
   workflow_dispatch:
 
+# Each step follows the 307 redirect (-L), fails on HTTP errors (--fail-with-body)
+# and checks that the API reports success.
+env:
+  API: https://glp.mgravey.com/GeoPressure/v2
+
 jobs:
   run-api-tests:
     runs-on: ubuntu-latest
@@ -14,7 +19,7 @@ jobs:
       # Test GeoPressure v2/map endpoint
       - name: Test v2/map endpoint
         run: |
-          curl -X POST "https://glp.mgravey.com/GeoPressure/v2/map/" \
+          curl -sSL --fail-with-body -X POST "$API/map/" \
             -H "Content-Type: application/json" \
             -d '{
               "W": -18,
@@ -25,12 +30,12 @@ jobs:
               "pressure": [97766, 97800, 97833],
               "label": [1, 1, 1]
             }' \
-            --max-time 60
+            --max-time 60 | tee /dev/stderr | jq -e '.status == "success"'
 
       # Test GeoPressure v2/timeseries endpoint using startTime and endTime
       - name: Test v2/timeseries with startTime and endTime
         run: |
-          curl -X POST "https://glp.mgravey.com/GeoPressure/v2/timeseries/" \
+          curl -sSL --fail-with-body -X POST "$API/timeseries/" \
             -H "Content-Type: application/json" \
             -d '{
               "lon": 6,
@@ -38,12 +43,12 @@ jobs:
               "startTime": 1497916800,
               "endTime": 1500667800
             }' \
-            --max-time 60
+            --max-time 60 | tee /dev/stderr | jq -e '.status == "success"'
 
       # Test GeoPressure v2/timeseries endpoint using pressure timeseries
       - name: Test v2/timeseries with pressure values
         run: |
-          curl -X POST "https://glp.mgravey.com/GeoPressure/v2/timeseries/" \
+          curl -sSL --fail-with-body -X POST "$API/timeseries/" \
             -H "Content-Type: application/json" \
             -d '{
               "lon": 6,
@@ -51,20 +56,32 @@ jobs:
               "time": [1572075000, 1572076800, 1572078600],
               "pressure": [97766, 97800, 97833]
             }' \
-            --max-time 60
+            --max-time 60 | tee /dev/stderr | jq -e '.status == "success"'
 
-      # Test GeoPressure v2/pressurepath endpoint using pressure timeseries
-      - name: Test v2/pressurepath
+      # Test GeoPressure v2/pressurePath endpoint using pressure timeseries
+      - name: Test v2/pressurePath
         run: |
-          curl -X POST "https://glp.mgravey.com/GeoPressure/v2/pressurepath/" \
+          curl -sSL --fail-with-body -X POST "$API/pressurePath/" \
             -H "Content-Type: application/json" \
             -d '{
               "lon": [17.5, 17.5, 17.5, 17.5, 17.5, 41.6, 41.6],
               "lat": [48.5, 48.5, 48.5, 48.5, 48.5, 41.6, 41.6],
               "time": [1501113600, 1501115400, 1501117200, 1501119000, 1501120800, 1501745400, 1501747200],
               "variable": ["altitude", "surface_pressure"],
-              "dataset": "land",
               "pressure": [98900, 99200, 99400, 99500, 99900, 100000, 100100],
               "workers": 1
             }' \
-            --max-time 60
+            --max-time 60 | tee /dev/stderr | jq -e '.status == "success"'
+
+      # Test GeoPressure v2/elevationPath endpoint
+      - name: Test v2/elevationPath
+        run: |
+          curl -sSL --fail-with-body -X POST "$API/elevationPath/" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "lon": [8.47, 9.41, 30.00],
+              "lat": [48.89, 44.78, -23.13],
+              "scale": 10,
+              "samplingScale": 1
+            }' \
+            --max-time 60 | tee /dev/stderr | jq -e '.status == "success"'

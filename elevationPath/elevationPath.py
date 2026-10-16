@@ -102,11 +102,13 @@ class GP_elevationPath(GEE_Service):
 
         # Select appropriate DEM from multi-resolution collection
         # Uses custom DEM collection with different resolution factors
+        dem_collection = self.ee.ImageCollection(
+            "projects/earthimages4unil/assets/PostDocProjects/rafnuss/GLO_reduced"
+        )
+        # A scale finer than the finest layer would select nothing (null image); use the finest
+        imageScale = self.ee.Number(imageScale).min(dem_collection.aggregate_max("factor"))
         elevation_image = (
-            self.ee.ImageCollection(
-                "projects/earthimages4unil/assets/PostDocProjects/rafnuss/GLO_reduced"
-            )
-            .filter(self.ee.Filter.gte("factor", imageScale))
+            dem_collection.filter(self.ee.Filter.gte("factor", imageScale))
             .sort("factor")
             .first()
         )
@@ -205,7 +207,14 @@ class GP_elevationPath(GEE_Service):
                 .round()
                 .divide(1000)  # Round coordinates to 3 decimal places
             )
-            .reduceRegions(sample_points, self.ee.Reducer.first(), dataScale)
+            # Sample in the DEM layer's own grid. Passing `dataScale` (111139 / scale m) made Earth
+            # Engine build a grid of 111139 / 111319.49 = 0.99838 of the layer's cell size, anchored
+            # at (-180, 90), which drifts away from the DEM cells (GeoPressureAPI#33).
+            .reduceRegions(
+                collection=sample_points,
+                reducer=self.ee.Reducer.first(),
+                crs=elevation_image.projection(),
+            )
         )
 
         def toJson(key, val):

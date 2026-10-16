@@ -2,7 +2,7 @@
 GeoPressure API - Timeseries Cloud Function
 
 This module provides a Google Cloud Function endpoint for extracting atmospheric
-pressure time series from ERA5-LAND data. Supports both time-bounded extraction
+pressure time series from ERA5 and ERA5-Land data. Supports both time-bounded extraction
 and pressure-based altitude computation for geolocator analysis.
 
 Author: GeoPressure Team
@@ -47,7 +47,7 @@ def timeseries(request):
     Google Cloud Function entry point for timeseries API.
 
     Handles HTTP requests for atmospheric pressure time series extraction
-    from ERA5-LAND data. Supports both time-bounded extraction and explicit
+    from ERA5 and ERA5-Land data. Supports both time-bounded extraction and explicit
     pressure-based altitude computation.
 
     Args:
@@ -68,6 +68,8 @@ def timeseries(request):
         Pressure-based mode:
         - time (array): Array of UNIX timestamps
         - pressure (array): Array of pressure measurements in Pascal
+        - dataset (str): "single-levels" (default) or "land"
+        - altitudeFormula (str): "virtual" (default) or "standard"
 
     Response Format:
         Success: {"status": "success", "taskID": timestamp, "data": {...}}
