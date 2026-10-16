@@ -168,6 +168,8 @@ class GP_timeseries_v2(GEE_Service):
         ERA5 = self.ee.ImageCollection(
             "ECMWF/ERA5_LAND/HOURLY" if dataset == "land" else "ECMWF/ERA5/HOURLY"
         )
+        # Open the window an hour before the first measurement so it can match the
+        # closest image, including the preceding hourly image.
         ERA5_pressure = ERA5.filterDate(  # Fixed typo: was "ERA5_pressur"
             self.ee.Date(start).advance(-1, "hour"), self.ee.Date(end).advance(1, "hour")
         ).select(["surface_pressure", "temperature_2m", "dewpoint_temperature_2m"])
