@@ -386,11 +386,17 @@ class GP_map_v2(GEE_Service):
                 im = self.ee.Image(feature.get("bestERA5"))
                 geoPot = im.select("geopotential").divide(g0)  # Convert geopotential to altitude [m]
 
+                demCollection = self.ee.ImageCollection(
+                    "projects/earthimages4unil/assets/PostDocProjects/rafnuss/GLO_minMax_reduced"
+                )
+                # A scale finer than the finest layer would select nothing; use the finest
                 altIm = (
-                    self.ee.ImageCollection(
-                        "projects/earthimages4unil/assets/PostDocProjects/rafnuss/GLO_minMax_reduced"
+                    demCollection.filter(
+                        self.ee.Filter.gte(
+                            "factor",
+                            self.ee.Number(scaleFactor).min(demCollection.aggregate_max("factor")),
+                        )
                     )
-                    .filter(self.ee.Filter.gte("factor", scaleFactor))
                     .sort("factor")
                     .first()
                 )
