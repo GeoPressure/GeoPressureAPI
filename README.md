@@ -34,7 +34,7 @@ Please [file an issue](https://github.com/GeoPressure/GeoPressureAPI/issues/new)
 | ----- | ----- | ----------- |
 | `code` | `commit` | Git commit the deployment was built from (`GIT_COMMIT`, set at deploy) |
 | | `deployedAt` | Deploy time (`DEPLOYED_AT`, set at deploy) |
-| | `service`, `revision` | Cloud Run / Cloud Functions service and revision (`K_SERVICE`, `K_REVISION`) |
+| | `service`, `revision` | Cloud Run service and revision (`K_SERVICE`, `K_REVISION`) |
 | | `sourceHash` | First 12 hex digits of the SHA-256 of the function folder's `*.py`, `requirements.txt` and `*.csv.gz` files; always present |
 | | `startedAt` | When the serving instance started |
 | `era5` | `dataset` | `"single-levels"`, `"land"` or `"both"`, as queried |
@@ -61,8 +61,8 @@ Please [file an issue](https://github.com/GeoPressure/GeoPressureAPI/issues/new)
   "code": {
     "commit": "65a2119...",
     "deployedAt": "2026-11-19T10:00:00Z",
-    "service": "timeseries",
-    "revision": "timeseries-00042-abc",
+    "service": "geopressureapi-timeseries",
+    "revision": "geopressureapi-timeseries-00042-abc",
     "sourceHash": "3f2a9c1b7d4e",
     "startedAt": "2026-11-19T10:05:12Z"
   },
@@ -380,9 +380,25 @@ Expect **~3 m for relative altitude changes at a fixed location** and **~10 m me
 
 ## Deployment
 
-Each folder (`map/`, `timeseries/`, `elevationPath/`, `pressurePath/`) is a standalone [Google Cloud Function](https://cloud.google.com/functions) (Python, `functions-framework`) with its own `requirements.txt`. The entry point has the same name as the folder (e.g. `pressurePath`).
+Each folder (`map/`, `timeseries/`, `elevationPath/`, `pressurePath/`) is a standalone [Cloud Run](https://cloud.google.com/run) service, `geopressureapi-<folder>` (lower case) in project `cloud-service-mgravey`, region `us-central1`. It is written as a Python function (`functions-framework`, entry point named after the folder, e.g. `pressurePath`) with its own `requirements.txt`. `https://glp.mgravey.com/GeoPressure/v2/<endpoint>/` redirects (307) to the service URL.
 
-A push to `main` deploys each folder as it is, so a function can only import files inside its own folder.
+**Merging to `main` deploys.** Every push to `main` of GeoPressure/GeoPressureAPI starts four Cloud Build triggers, one per folder, whatever files changed. Each one:
+
+1. builds an image from its folder only, with Google Cloud buildpacks (`pack build --path=<folder>`, `GOOGLE_FUNCTION_TARGET=<folder>`);
+2. pushes it to `us-central1-docker.pkg.dev/cloud-service-mgravey/cloud-run-source-deploy/geopressureapi/geopressureapi-<folder>:<commit>`;
+3. runs `gcloud run services update geopressureapi-<folder> --image=…:<commit>`, which labels the service `commit-sha=<commit>`.
+
+So a function can only import files inside its own folder. If a build fails, the previous revision keeps serving. To check a deploy after a merge:
+
+```bash
+gcloud builds list --project cloud-service-mgravey --limit 4
+```
+
+All four builds of the merge commit should be `SUCCESS`. Then compare the [`provenance.code`](#provenance) of each endpoint with the merged code (`sourceHash`, and `commit` once the triggers set it):
+
+```bash
+python3 provenance.py map timeseries pressurePath elevationPath
+```
 
 The virtual formula and the ERA5 cell rule (`era5_grid_snap()`) are defined in the root `altitude.py`, which computes the GPT3 lapse rate of each point in Python from `gpt3_1_lapse_rate.csv.gz` (the lapse-rate columns of [gpt3_1.grd](https://vmf.geo.tuwien.ac.at/codes/gpt3_1.grd), K/km) and passes it to Earth Engine. `pressurePath/` and `timeseries/` each carry an identical copy of both files, because a function cannot import from outside its folder. After editing either file, copy it into both folders; `tests/test_altitude_copies.py` fails while the copies differ. In the same way, each of the four folders carries a copy of the root `provenance.py`, which builds the [`provenance`](#provenance) field; `tests/test_provenance.py` fails while the copies differ. Run the offline tests with `python3 -m unittest tests.test_timeseries_altitude tests.test_altitude_copies tests.test_era5_grid_snap tests.test_provenance` (the `/map/` request tests also need `numpy`). Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
 
@@ -391,12 +407,14 @@ Each function authenticates to Earth Engine with a service account read from two
 - `GEE_API_ADDRESS`: service account email
 - `GEE_API_KEY`: service account private key
 
-and, optionally, reports the deployed commit from two more, set at each deploy (see [Provenance](#provenance)):
+On Cloud Run both are [Secret Manager](https://cloud.google.com/secret-manager) references on each service, and `gcloud run services update` keeps them from one deploy to the next.
 
-- `GIT_COMMIT`: full SHA of the commit deployed
-- `DEPLOYED_AT`: deploy time, ISO 8601 UTC
+Two optional variables fill `provenance.code` (see [Provenance](#provenance)):
 
-For example, with `gcloud functions deploy ... --update-env-vars GIT_COMMIT=$(git rev-parse HEAD),DEPLOYED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)`, or `GIT_COMMIT=$COMMIT_SHA` in a Cloud Build trigger.
+- `GIT_COMMIT`: full SHA of the deployed commit. The service label `commit-sha` is not visible inside the container, so the Deploy step of each trigger has to set it, with `--update-env-vars=GIT_COMMIT=$COMMIT_SHA`.
+- `DEPLOYED_AT`: deploy time, ISO 8601 UTC. Cloud Build has no substitution for the time, so it is unset by default (`null`). The deploy time is the creation time of the revision named in `provenance.code.revision`.
+
+Cloud Run sets `K_SERVICE` and `K_REVISION`.
 
 To run one locally:
 
