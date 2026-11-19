@@ -15,7 +15,7 @@ import math
 import os
 
 from GEE_API_server import GEE_Service
-from altitude import ALTITUDE_FORMULAS, pressure_to_altitude
+from altitude import ALTITUDE_FORMULAS, gpt3_lapse_rate, pressure_to_altitude
 
 
 
@@ -137,13 +137,13 @@ class GP_timeseries_v2(GEE_Service):
 
         def makeFeature(measurement_list):
             """
-            Convert time-pressure pair to Earth Engine Feature.
+            Convert a [time, pressure, lapse] triplet to Earth Engine Feature.
 
             Args:
-                measurement_list: List containing [time, pressure] values
+                measurement_list: List containing [time, pressure, GPT3 lapse rate (K/m)]
 
             Returns:
-                Earth Engine Feature with timestamp and pressure properties
+                Earth Engine Feature with timestamp, pressure and lapse properties
             """
             measurement_list = self.ee.List(measurement_list)
             return self.ee.Feature(
@@ -153,11 +153,13 @@ class GP_timeseries_v2(GEE_Service):
                         measurement_list.get(0)
                     ).multiply(1000),
                     "pressure": measurement_list.get(1),
+                    "lapse": measurement_list.get(2),
                 },
             )
 
-        # Combine time and pressure arrays
-        val = self.ee.List([time, pressure]).unzip()
+        # Combine time, pressure and the GPT3 lapse rate, computed here per timestamp
+        lapse = gpt3_lapse_rate([coordinates[0]] * len(time), [coordinates[1]] * len(time), time)
+        val = self.ee.List([time, pressure, lapse]).unzip()
         feature_collection = self.ee.FeatureCollection(val.map(makeFeature))
 
         # Get time range for ERA5 data filtering
@@ -197,7 +199,7 @@ class GP_timeseries_v2(GEE_Service):
             accounting for temperature variation and geopotential height from ERA5.
 
             Physical constants from standard atmosphere:
-            - Lb: Seasonal and latitude-dependent lapse rate, or -6.5 K/km for standard
+            - Lb: GPT3 lapse rate of the location and day, or -6.5 K/km for standard
             - R: Universal gas constant (8.31432 J/mol/K)
             - g0: Standard gravity (9.80665 m/s²)
             - M: Molar mass of dry air (0.0289644 kg/mol)
@@ -219,8 +221,7 @@ class GP_timeseries_v2(GEE_Service):
                 feature.get("pressure"),
                 im,
                 elevation,
-                coordinates[1],
-                feature.get("system:time_start"),
+                feature.get("lapse"),
                 altitudeFormula,
             ).rename("altitude")
 
