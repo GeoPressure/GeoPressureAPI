@@ -34,6 +34,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy
 
 from GEE_API_server import GEE_Service
+from provenance import DEM_MINMAX, add_provenance, altitude_group, dem_factors, dem_group, era5_group
 
 # Get number of CPU cores for parallel processing
 numCores = os.cpu_count()
@@ -165,6 +166,9 @@ class GP_map_v2(GEE_Service):
         )
         # "both" joins the two collections, so it ends with the earlier of the two.
         self.endERA5 = min(self.endERA5_land, self.endERA5_single)
+
+        # Layers of the DEM collection, to report the one a request uses (provenance)
+        self.demFactors = dem_factors(self.ee, DEM_MINMAX)
 
     def getEndERA5(self, dataset):
         """
@@ -566,6 +570,12 @@ class GP_map_v2(GEE_Service):
         return response
 
     def singleRequest(self, jsonObj, requestType):
+        """Handle one request and append the provenance of its response (see provenance.py)."""
+        groups = {}
+        code, headers, body = self._singleRequest(jsonObj, requestType, groups)
+        return code, headers, add_provenance(body, groups)
+
+    def _singleRequest(self, jsonObj, requestType, groups):
         """
         Handle a single API request for MSE map generation.
         
@@ -727,6 +737,10 @@ class GP_map_v2(GEE_Service):
                 dataset = str(dataset_val[0])
             else:
                 dataset = str(dataset_val)
+
+        groups["era5"] = era5_group(dataset, self.getEndERA5(dataset), "nearest")
+        groups["altitude"] = altitude_group("standard")  # the mask uses the standard formula
+        groups["dem"] = dem_group(DEM_MINMAX, self.demFactors, scale)
 
         # Validate array lengths
         if len(time) != len(pressure) or len(time) != len(label):

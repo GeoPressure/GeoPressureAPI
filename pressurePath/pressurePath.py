@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from GEE_API_server import GEE_Service
 from altitude import ALTITUDE_FORMULAS, era5_grid_snap, gpt3_lapse_rate, pressure_to_altitude
+from provenance import add_provenance, altitude_group, era5_group, era5_last_hours, last_hour
 
 # Get number of CPU cores for parallel processing
 numCores = os.cpu_count()
@@ -158,6 +159,9 @@ class GP_pressurePath(GEE_Service):
         self.ERA5Combined = self.ee.ImageCollection(simpleJoined).map(combineBands)
         self.era5_land=era5_land;
         self.era5_single=era5_single;
+
+        # Last available hour of each ERA5 collection, read once per instance (provenance)
+        self.lastHours = era5_last_hours(self.ee)
 
     def getPressureAlongPath(  # Fixed typo: was "getPresureAlongPath"
         self,
@@ -394,6 +398,12 @@ class GP_pressurePath(GEE_Service):
     # return url;
 
     def singleRequest(self, jsonObj, requestType):
+        """Handle one request and append the provenance of its response (see provenance.py)."""
+        groups = {}
+        code, headers, body = self._singleRequest(jsonObj, requestType, groups)
+        return code, headers, add_provenance(body, groups)
+
+    def _singleRequest(self, jsonObj, requestType, groups):
         """
         Handle a single API request for pressure path analysis.
 
@@ -497,6 +507,10 @@ class GP_pressurePath(GEE_Service):
             return printErrorMessage(
                 timeStamp, "Pressure, time and path arrays must have the same length."
             )
+
+        groups["era5"] = era5_group(dataset, last_hour(self.lastHours, dataset), "centre")
+        if pressure:
+            groups["altitude"] = altitude_group(altitudeFormula)
 
         try:
             # Process the request

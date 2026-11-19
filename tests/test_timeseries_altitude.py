@@ -8,16 +8,27 @@ import types
 import unittest
 
 from altitude import ALTITUDE_FORMULAS, gpt3_lapse_rate, pressure_to_altitude
+import provenance
 
 SOURCE = Path(__file__).resolve().parents[1] / "timeseries" / "timeseries.py"
 TREE = ast.parse(SOURCE.read_text())
 GLOBALS = {"math": math, "datetime": datetime, "json": json, "GEE_Service": object,
            "ALTITUDE_FORMULAS": ALTITUDE_FORMULAS, "gpt3_lapse_rate": gpt3_lapse_rate,
-           "pressure_to_altitude": pressure_to_altitude}
+           "pressure_to_altitude": pressure_to_altitude,
+           **{name: getattr(provenance, name) for name in
+              ("add_provenance", "altitude_group", "era5_group", "era5_last_hours", "last_hour")}}
 # Load endpoint definitions without importing/authenticating the Earth Engine service.
 exec(compile(ast.Module(body=[n for n in TREE.body if not isinstance(n, (ast.Import, ast.ImportFrom))],
                         type_ignores=[]), str(SOURCE), "exec"), GLOBALS)
 CLASS = GLOBALS["GP_timeseries_v2"]
+
+
+def make_processor():
+    """The endpoint without its Earth Engine start-up (service account, last ERA5 hours)."""
+    processor = CLASS.__new__(CLASS)
+    processor.lastHours = {"single-levels": None, "land": None}
+    return processor
+
 ALTITUDE = next(n for n in ast.walk(TREE) if isinstance(n, ast.FunctionDef) and n.name == "getAltitude")
 # Evaluate the production expression before sampling and CSV export.
 ALTITUDE.body[-1] = ast.Return(value=ast.Name(id="dh", ctx=ast.Load()))
@@ -88,7 +99,7 @@ class TimeseriesAltitudeTest(unittest.TestCase):
         path_altitude.body = path_altitude.body[:dh_index + 1] + [
             ast.Return(value=ast.Name(id="dh", ctx=ast.Load()))]
         path_module = ast.fix_missing_locations(ast.Module(body=[path_altitude], type_ignores=[]))
-        processor = CLASS()
+        processor = make_processor()
         processor.ee = types.SimpleNamespace(Image=Image, Number=Number)
         for lon, lat, time, _, expected in REFERENCE:
             for formula, reference in [("virtual", expected), ("standard", STANDARD)]:
@@ -105,7 +116,7 @@ class TimeseriesAltitudeTest(unittest.TestCase):
                     self.assertAlmostEqual(env["getAltitude"](feature), reference, places=9)
 
     def test_request_defaults_overrides_and_validation(self):
-        processor = CLASS()
+        processor = make_processor()
         calls = []
         processor.explicitTimeCollection = lambda *args: calls.append(args) or "csv-url"
         processor.boundingTimeCollection = lambda *args: calls.append(args) or "csv-url"

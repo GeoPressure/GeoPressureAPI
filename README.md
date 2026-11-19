@@ -22,30 +22,58 @@ Please [file an issue](https://github.com/GeoPressure/GeoPressureAPI/issues/new)
 - **Units:** time as [UNIX timestamps](https://en.wikipedia.org/wiki/Unix_time) in seconds, pressure in Pa, coordinates in WGS84 degrees, distances and altitudes in m.
 - **Time matching:** each timestamp is paired with the closest ERA5 hour within ±1 h.
 - **Grid cell:** `/pressurePath/` and `/timeseries/` sample each position at the centre of the ERA5 cell holding it: the nearest grid point, with ties going east, and north (single levels) or south (ERA5-Land). GeoPressureR's ARCO backend uses the same rule. A point exactly on a cell edge, such as every position of a GeoPressureR map at `scale = 4`, would otherwise be sampled from either neighbour at random.
-- **Success:** `{"status": "success", "taskID": ..., "data": {...}, "version": {...}}`. The fields documented below are inside `data`.
-- **Error:** HTTP `400` with `{"status": "error", "taskID": ..., "errorMessage": ..., "advice": ..., "version": {...}}`.
-- **Version:** every JSON response ends with a `version` object that identifies the code serving it (see [Version](#version)). The same object is sent, as compact JSON, in the `X-GeoPressure-Version` header of every response, including the plain-text ones.
+- **Success:** `{"status": "success", "taskID": ..., "data": {...}, "provenance": {...}}`. The fields documented below are inside `data`.
+- **Error:** HTTP `400` with `{"status": "error", "taskID": ..., "errorMessage": ..., "advice": ..., "provenance": {...}}`.
+- **Provenance:** every JSON response ends with a `provenance` object describing the code and the data that served it (see [Provenance](#provenance)). Its `code` group is also sent, as compact JSON `{"code": {...}}`, in the `X-GeoPressure-Provenance` header of every response, including the plain-text ones.
 
-### Version
+### Provenance
 
-| Field | Description |
-| ----- | ----------- |
-| `commit` | Git commit the deployment was built from (`GIT_COMMIT`, set at deploy); `null` if not set |
-| `deployedAt` | Deploy time, ISO 8601 UTC (`DEPLOYED_AT`, set at deploy); `null` if not set |
-| `service`, `revision` | Cloud Run / Cloud Functions service and revision (`K_SERVICE`, `K_REVISION`); `null` when not on Google Cloud |
-| `sourceHash` | First 12 hex digits of the SHA-256 of the function folder's `*.py`, `requirements.txt` and `*.csv.gz` files; always present |
-| `startedAt` | When the serving instance started, ISO 8601 UTC |
+`provenance` has the same groups on every endpoint. An endpoint leaves out the groups it does not use, and a validation error carries only `code`. No value changes from one request to the next on the same instance, so the objects of many requests can be collapsed into the distinct ones. Unknown values are `null`, which means the same as a missing key. Timestamps are ISO 8601 UTC.
 
-`sourceHash` needs nothing from the deployer: to check which code an endpoint serves, run `python3 version.py map timeseries pressurePath elevationPath` in a checkout and compare. Each endpoint has its own hash.
+| Group | Field | Description |
+| ----- | ----- | ----------- |
+| `code` | `commit` | Git commit the deployment was built from (`GIT_COMMIT`, set at deploy) |
+| | `deployedAt` | Deploy time (`DEPLOYED_AT`, set at deploy) |
+| | `service`, `revision` | Cloud Run / Cloud Functions service and revision (`K_SERVICE`, `K_REVISION`) |
+| | `sourceHash` | First 12 hex digits of the SHA-256 of the function folder's `*.py`, `requirements.txt` and `*.csv.gz` files; always present |
+| | `startedAt` | When the serving instance started |
+| `era5` | `dataset` | `"single-levels"`, `"land"` or `"both"`, as queried |
+| | `collections` | Earth Engine ERA5 collections; with `"both"`, ERA5-Land first, as it takes precedence |
+| | `geopotential` | Ground level of the barometric formula, in the same order |
+| | `lastHour` | Last ERA5 hour available, read once when the instance started |
+| | `cell` | `"centre"`: each position takes the ERA5 cell holding it (see Grid cell); `"nearest"`: Earth Engine's nearest-neighbour resampling onto the map grid |
+| `altitude` | `formula` | `"virtual"` or `"standard"` (see [Altitude formula](#altitude-formula)); the map mask always uses `"standard"` |
+| | `lapseRate` | `"gpt3_1"` (GPT3 grid) or `"-6.5 K/km"` |
+| `dem` | `asset` | Earth Engine DEM collection |
+| | `factor` | Resolution of the DEM layer used (pixels per degree) |
+
+| Endpoint | Groups |
+| -------- | ------ |
+| `/map/` | `code`, `era5`, `altitude`, `dem` |
+| `/timeseries/` | `code`, `era5`, and `altitude` with `time` + `pressure` |
+| `/pressurePath/` | `code`, `era5`, and `altitude` with `pressure` |
+| `/elevationPath/` | `code`, `dem` |
+
+`sourceHash` needs nothing from the deployer: to check which code an endpoint serves, run `python3 provenance.py map timeseries pressurePath elevationPath` in a checkout and compare. Each endpoint has its own hash.
 
 ```json
-"version": {
-  "commit": "65a2119...",
-  "deployedAt": "2026-11-19T10:00:00Z",
-  "service": "timeseries",
-  "revision": "timeseries-00042-abc",
-  "sourceHash": "3f2a9c1b7d4e",
-  "startedAt": "2026-11-19T10:05:12Z"
+"provenance": {
+  "code": {
+    "commit": "65a2119...",
+    "deployedAt": "2026-11-19T10:00:00Z",
+    "service": "timeseries",
+    "revision": "timeseries-00042-abc",
+    "sourceHash": "3f2a9c1b7d4e",
+    "startedAt": "2026-11-19T10:05:12Z"
+  },
+  "era5": {
+    "dataset": "single-levels",
+    "collections": ["ECMWF/ERA5/HOURLY"],
+    "geopotential": ["ECMWF/ERA5/HOURLY/20200101T00"],
+    "lastHour": "2026-11-12T23:00:00Z",
+    "cell": "centre"
+  },
+  "altitude": { "formula": "virtual", "lapseRate": "gpt3_1" }
 }
 ```
 
@@ -356,14 +384,14 @@ Each folder (`map/`, `timeseries/`, `elevationPath/`, `pressurePath/`) is a stan
 
 A push to `main` deploys each folder as it is, so a function can only import files inside its own folder.
 
-The virtual formula and the ERA5 cell rule (`era5_grid_snap()`) are defined in the root `altitude.py`, which computes the GPT3 lapse rate of each point in Python from `gpt3_1_lapse_rate.csv.gz` (the lapse-rate columns of [gpt3_1.grd](https://vmf.geo.tuwien.ac.at/codes/gpt3_1.grd), K/km) and passes it to Earth Engine. `pressurePath/` and `timeseries/` each carry an identical copy of both files, because a function cannot import from outside its folder. After editing either file, copy it into both folders; `tests/test_altitude_copies.py` fails while the copies differ. In the same way, each of the four folders carries a copy of the root `version.py`, which builds the [`version`](#version) field; `tests/test_version.py` fails while the copies differ. Run the offline tests with `python3 -m unittest tests.test_timeseries_altitude tests.test_altitude_copies tests.test_era5_grid_snap tests.test_version`. Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
+The virtual formula and the ERA5 cell rule (`era5_grid_snap()`) are defined in the root `altitude.py`, which computes the GPT3 lapse rate of each point in Python from `gpt3_1_lapse_rate.csv.gz` (the lapse-rate columns of [gpt3_1.grd](https://vmf.geo.tuwien.ac.at/codes/gpt3_1.grd), K/km) and passes it to Earth Engine. `pressurePath/` and `timeseries/` each carry an identical copy of both files, because a function cannot import from outside its folder. After editing either file, copy it into both folders; `tests/test_altitude_copies.py` fails while the copies differ. In the same way, each of the four folders carries a copy of the root `provenance.py`, which builds the [`provenance`](#provenance) field; `tests/test_provenance.py` fails while the copies differ. Run the offline tests with `python3 -m unittest tests.test_timeseries_altitude tests.test_altitude_copies tests.test_era5_grid_snap tests.test_provenance` (the `/map/` request tests also need `numpy`). Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
 
 Each function authenticates to Earth Engine with a service account read from two environment variables:
 
 - `GEE_API_ADDRESS`: service account email
 - `GEE_API_KEY`: service account private key
 
-and, optionally, reports the deployed commit from two more, set at each deploy (see [Version](#version)):
+and, optionally, reports the deployed commit from two more, set at each deploy (see [Provenance](#provenance)):
 
 - `GIT_COMMIT`: full SHA of the commit deployed
 - `DEPLOYED_AT`: deploy time, ISO 8601 UTC
