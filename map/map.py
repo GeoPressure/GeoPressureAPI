@@ -35,8 +35,8 @@ import numpy
 
 from GEE_API_server import GEE_Service
 from provenance import (
-    DEM_MINMAX, Era5LastHours, add_provenance, altitude_group, dem_factors, dem_group, era5_group,
-    era5_last_hours, era5_unavailable,
+    DEM_MINMAX, Era5LastHours, add_provenance, altitude_group, dem_factor, dem_group, era5_group,
+    era5_last_hours, era5_unavailable, startup_info,
 )
 
 # Get number of CPU cores for parallel processing
@@ -174,10 +174,10 @@ class GP_map_v2(GEE_Service):
         # collections do not end at the same date, so gating everything on Land either
         # rejects a single-levels request that could be served, or lets one through
         # that returns empty maps. "both" ends with the earlier of the two.
-        self.lastHours = Era5LastHours(lambda: era5_last_hours(self.ee))
-
-        # Layers of the DEM collection, to report the one a request uses (provenance)
-        self.demFactors = dem_factors(self.ee, DEM_MINMAX)
+        # Read with the DEM layer factors in a single Earth Engine call.
+        hours, self.demFactors = startup_info(self.ee, DEM_MINMAX)
+        self.lastHours = Era5LastHours(lambda: era5_last_hours(self.ee), initial=hours)
+        # self.demFactors: layers of the DEM collection, to pick the one a request uses
 
     def getEndERA5(self, dataset):
         """
@@ -292,6 +292,26 @@ class GP_map_v2(GEE_Service):
         outputBands = ["mse"] + (["probAlt"] if includeMask else [])
         if includeMaskSplit:
             outputBands += ["probAbove", "probBelow"]
+
+        # DEM layer (per-pixel min and max ground elevation) matching the map scale: the
+        # finest layer when the scale is finer than all of them, otherwise the coarsest layer
+        # at least as fine as the scale. Chosen once per request, in Python when the layer
+        # factors are known.
+        demCollection = self.ee.ImageCollection(DEM_MINMAX)
+        factor = dem_factor(self.demFactors, scaleFactor)
+        if factor is not None:
+            altIm = self.ee.Image(demCollection.filter(self.ee.Filter.eq("factor", factor)).first())
+        else:
+            altIm = (
+                demCollection.filter(
+                    self.ee.Filter.gte(
+                        "factor",
+                        self.ee.Number(scaleFactor).min(demCollection.aggregate_max("factor")),
+                    )
+                )
+                .sort("factor")
+                .first()
+            )
 
         def runMSEmatch(labelFeature, hoursNeeded):
             """
@@ -416,21 +436,6 @@ class GP_map_v2(GEE_Service):
                 # Load reference geopotential and DEM data
                 im = self.ee.Image(feature.get("bestERA5"))
                 geoPot = im.select("geopotential").divide(g0)  # Convert geopotential to altitude [m]
-
-                demCollection = self.ee.ImageCollection(
-                    "projects/earthimages4unil/assets/PostDocProjects/rafnuss/GLO_minMax_reduced"
-                )
-                # A scale finer than the finest layer would select nothing; use the finest
-                altIm = (
-                    demCollection.filter(
-                        self.ee.Filter.gte(
-                            "factor",
-                            self.ee.Number(scaleFactor).min(demCollection.aggregate_max("factor")),
-                        )
-                    )
-                    .sort("factor")
-                    .first()
-                )
 
                 # Calculate altitude using barometric formula
                 # h = (T/Lb) * ((P/P0)^(-R*Lb/g0/M) - 1) + h0

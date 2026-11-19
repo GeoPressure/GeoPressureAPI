@@ -83,12 +83,13 @@ class Copies(unittest.TestCase):
             "pressurePath": [*provenance.ERA5_COLLECTION.values(), *provenance.ERA5_GEOPOTENTIAL.values()],
             "elevationPath": [provenance.DEM_PERCENTILE],
         }
-        used["map"].append(provenance.DEM_MINMAX)
         for folder, assets in used.items():
             text = (ROOT / folder / f"{folder}.py").read_text()
             for asset in assets:
                 with self.subTest(folder=folder, asset=asset):
                     self.assertIn(f'"{asset}"', text, f"{folder} no longer uses {asset}; update provenance.py")
+        # The map reads its DEM through the same constant it reports
+        self.assertIn("self.ee.ImageCollection(DEM_MINMAX)", (ROOT / "map" / "map.py").read_text())
 
 
 class CodeGroup(unittest.TestCase):
@@ -211,6 +212,74 @@ class LastHoursCache(unittest.TestCase):
             "status": "error", "taskID": 7, "lastERA5": SINGLE_END,
             "errorMessage": "ERA5 single-levels data not available from 2025-11-12 23:00:00. "
                             "Request only pressure with earlier date."})
+
+
+class FakeEE:
+    """Just enough of the ee module to count the getInfo() calls of startup_info()."""
+
+    def __init__(self, fail=False):
+        self.calls, self.fail = 0, fail
+        ee = self
+
+        class Query:
+            def __init__(self, value): self.value = value
+
+        class ImageCollection:
+            def __init__(self, asset): self.asset = asset
+            def filterDate(self, *args): return self
+            def aggregate_max(self, name): return Query(HOURS["land" if "LAND" in self.asset else "single-levels"])
+            def aggregate_array(self, name): return Query(MINMAX_FACTORS)
+
+        class List:
+            def __init__(self, queries): self.queries = queries
+            def getInfo(self):
+                ee.calls += 1
+                if ee.fail:
+                    raise RuntimeError("Earth Engine unavailable")
+                return [q.value for q in self.queries]
+
+        self.ImageCollection, self.List = ImageCollection, List
+
+
+class StartupQueries(unittest.TestCase):
+    def test_one_call_for_last_hours_and_dem_factors(self):
+        ee = FakeEE()
+        hours, factors = provenance.startup_info(ee, provenance.DEM_MINMAX)
+        self.assertEqual((hours, factors, ee.calls), (HOURS, MINMAX_FACTORS, 1))
+        self.assertEqual(provenance.era5_last_hours(ee), HOURS)
+        self.assertEqual(ee.calls, 2)
+
+    def test_failure_gives_unknown_values(self):
+        hours, factors = provenance.startup_info(FakeEE(fail=True), provenance.DEM_MINMAX)
+        self.assertEqual((hours, factors), ({"single-levels": None, "land": None}, None))
+
+    def test_cache_takes_initial_values_without_reading(self):
+        reads = []
+        cache = provenance.Era5LastHours(lambda: reads.append(1) or {}, initial=HOURS, clock=lambda: 0)
+        self.assertEqual((cache.get("both"), reads), (LAND_END, []))
+
+    def test_endpoints_use_one_startup_call(self):
+        self.assertIn("startup_info(self.ee, DEM_MINMAX)", (ROOT / "map" / "map.py").read_text())
+        for folder in ("map", "timeseries", "pressurePath", "elevationPath"):
+            text = (ROOT / folder / f"{folder}.py").read_text()
+            with self.subTest(folder=folder):
+                self.assertLessEqual(text.count("dem_factors(") + text.count("startup_info(") + text.count("Era5LastHours(lambda"), 2)
+
+
+class SpeedFixes(unittest.TestCase):
+    """Source checks for the Earth Engine graph changes (their results are checked on Earth Engine)."""
+
+    def test_pressurepath_sends_each_chunk_its_points_and_samples_needed_bands(self):
+        text = (ROOT / "pressurePath" / "pressurePath.py").read_text()
+        self.assertIn("self.ee.List(rows[i * chunkSize : min((i + 1) * chunkSize, size)])", text)
+        self.assertNotIn(".unzip()", text)
+        self.assertIn("combined.select(outputBands)", text)
+
+    def test_map_picks_the_dem_layer_once(self):
+        text = (ROOT / "map" / "map.py").read_text()
+        get_error = text[text.index("def getError"):text.index("# Calculate MSE map across all measurements")]
+        self.assertNotIn("demCollection", get_error)
+        self.assertIn('self.ee.Filter.eq("factor", factor)', text)
 
 
 class Envelope(unittest.TestCase):

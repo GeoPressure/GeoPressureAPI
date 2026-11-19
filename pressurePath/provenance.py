@@ -133,21 +133,31 @@ def dem_group(asset, factors, scale):
     return {"asset": asset, "factor": dem_factor(factors, scale)}
 
 
+def startup_info(ee, dem_asset=None):
+    """Last available hour (UNIX ms) of each ERA5 collection and, if dem_asset is given, the
+    factors of the layers of that DEM collection, read in a single Earth Engine call.
+
+    Returns (hours, factors): hours maps each dataset to its last hour, factors is a list or None.
+    If the call fails, every value is None.
+    """
+    queries = [
+        ee.ImageCollection(collection).filterDate("2024", "2100").aggregate_max("system:time_start")
+        for collection in ERA5_COLLECTION.values()
+    ]
+    if dem_asset is not None:
+        queries.append(ee.ImageCollection(dem_asset).aggregate_array("factor"))
+    try:
+        values = ee.List(queries).getInfo()
+    except Exception as e:
+        print(f"Could not read the last ERA5 hours or the DEM factors: {e}")
+        values = [None] * len(queries)
+    hours = dict(zip(ERA5_COLLECTION, values))
+    return hours, (values[len(ERA5_COLLECTION)] if dem_asset is not None else None)
+
+
 def era5_last_hours(ee):
     """Last available hour (UNIX ms) of each ERA5 collection, or None if the query fails."""
-    hours = {}
-    for name, collection in ERA5_COLLECTION.items():
-        try:
-            hours[name] = (
-                ee.ImageCollection(collection)
-                .filterDate("2024", "2100")
-                .aggregate_max("system:time_start")
-                .getInfo()
-            )
-        except Exception as e:
-            print(f"Could not read the last hour of {collection}: {e}")
-            hours[name] = None
-    return hours
+    return startup_info(ee)[0]
 
 
 def last_hour(hours, dataset):
@@ -166,10 +176,16 @@ class Era5LastHours:
     previous value.
     """
 
-    def __init__(self, reader, max_age=LAST_HOUR_MAX_AGE, retry=LAST_HOUR_RETRY, clock=time.time):
+    def __init__(self, reader, max_age=LAST_HOUR_MAX_AGE, retry=LAST_HOUR_RETRY, clock=time.time,
+                 initial=None):
+        """initial: hours already read (e.g. by startup_info()), used instead of a first read."""
         self.reader, self.max_age, self.retry, self.clock = reader, max_age, retry, clock
         self.hours = {name: None for name in ERA5_COLLECTION}
-        self.refresh()
+        if initial is None:
+            self.refresh()
+        else:
+            self.hours.update({name: initial.get(name) for name in ERA5_COLLECTION})
+            self.read_at = self.clock()
 
     def refresh(self):
         new = self.reader()

@@ -236,13 +236,21 @@ class GP_pressurePath(GEE_Service):
             sample_path = [era5_grid_snap(p[0], p[1], dataset.lower()) for p in path]
         else:
             sample_path = path
+        # One [time, pressure, [lon, lat], lapse] row per point, kept in Python so that each
+        # chunk's request carries only its own points.
         if pressure:
             lapse = gpt3_lapse_rate([p[0] for p in path], [p[1] for p in path], time)
-            val = self.ee.List([time, pressure, sample_path, lapse]).unzip()
+            rows = [list(r) for r in zip(time, pressure, sample_path, lapse)]
         else:
-            val = self.ee.List([time, [0] * len(time), sample_path, [0] * len(time)]).unzip()
+            rows = [[t, 0, p, 0] for t, p in zip(time, sample_path)]
 
-        def runComputation4Chunk(i, val):
+        # Output columns. Only these bands are sampled at each point: an ERA5 single-levels
+        # image has about 290. A requested variable that is not a band stays missing, as before.
+        required_vars = list(
+            set(["time"] + (["altitude"] if pressure else []) + variable)
+        )
+
+        def runComputation4Chunk(i, rows):
             """
             Process a chunk of data points in parallel.
 
@@ -251,11 +259,11 @@ class GP_pressurePath(GEE_Service):
 
             Args:
                 i (int): Chunk index
-                val: Earth Engine List of input data
+                rows: [time, pressure, [lon, lat], lapse] of all points
             """
 
-            # Calculate chunk boundaries
-            localVal = val.slice(i * chunkSize, min((i + 1) * chunkSize, size))
+            # This chunk's points only
+            localVal = self.ee.List(rows[i * chunkSize : min((i + 1) * chunkSize, size)])
             fc = self.ee.FeatureCollection(localVal.map(makeFeature))
 
             # Get time range for this chunk
@@ -325,15 +333,18 @@ class GP_pressurePath(GEE_Service):
                 ).rename("altitude")
 
                 # Combine altitude with ERA5 variables and timestamp
-                return (
-                    dh.addBands(self.ee.Image(ft.get("bestERA5")))
-                    .addBands(
-                        self.ee.Image.constant(
-                            self.ee.Number(ft.get("system:time_start")).divide(1000)
-                        )
-                        .rename("time")
-                        .toLong()
+                combined = dh.addBands(self.ee.Image(ft.get("bestERA5"))).addBands(
+                    self.ee.Image.constant(
+                        self.ee.Number(ft.get("system:time_start")).divide(1000)
                     )
+                    .rename("time")
+                    .toLong()
+                )
+                outputBands = self.ee.List(required_vars).filter(
+                    self.ee.Filter.inList("item", combined.bandNames())
+                )
+                return (
+                    combined.select(outputBands)
                     .sample(region=ft.geometry(), scale=1, numPixels=1, dropNulls=False)
                     .first()
                     .set(
@@ -347,9 +358,6 @@ class GP_pressurePath(GEE_Service):
             )
 
             # Filter out null values for required variables
-            required_vars = list(
-                set(["time"] + (["altitude"] if pressure else []) + variable)
-            )
             for key in required_vars:
                 aggregatedMap = aggregatedMap.filter(self.ee.Filter.neq(key, None))
 
@@ -379,7 +387,7 @@ class GP_pressurePath(GEE_Service):
         # failure in one chunk into silently missing points in a "success" response.
         with ThreadPoolExecutor(max_workers=min(nbChunk, 90)) as executor:
             futures = [
-                executor.submit(runComputation4Chunk, i, val) for i in range(nbChunk)
+                executor.submit(runComputation4Chunk, i, rows) for i in range(nbChunk)
             ]
             for i, future in enumerate(futures):
                 try:
