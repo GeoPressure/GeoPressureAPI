@@ -172,6 +172,47 @@ class DataGroups(unittest.TestCase):
         self.assertIsNone(provenance.iso_utc(None))
 
 
+class LastHoursCache(unittest.TestCase):
+    def setUp(self):
+        self.now = 0.0
+        self.reads = []
+        self.answers = [dict(HOURS)]
+
+    def reader(self):
+        self.reads.append(self.now)
+        return self.answers[min(len(self.reads), len(self.answers)) - 1]
+
+    def cache(self):
+        return provenance.Era5LastHours(self.reader, clock=lambda: self.now)
+
+    def test_read_at_start_and_after_six_hours(self):
+        cache = self.cache()
+        self.answers.append({"single-levels": SINGLE_END + 86400000, "land": LAND_END + 86400000})
+        self.now = 6 * 3600
+        self.assertEqual(cache.get("single-levels"), SINGLE_END)
+        self.assertEqual(len(self.reads), 1)
+        self.now = 6 * 3600 + 1
+        self.assertEqual(cache.get("single-levels"), SINGLE_END + 86400000)
+        self.assertEqual(cache.get("both"), LAND_END + 86400000)
+        self.assertEqual(len(self.reads), 2)
+
+    def test_unknown_is_retried_and_a_failed_read_keeps_the_old_value(self):
+        self.answers = [{"single-levels": None, "land": LAND_END}, {"single-levels": SINGLE_END, "land": None}]
+        cache = self.cache()
+        self.assertIsNone(cache.get("single-levels"))
+        self.now = 61
+        self.assertEqual(cache.get("single-levels"), SINGLE_END)
+        self.assertEqual(cache.get("land"), LAND_END)
+
+    def test_416_message_is_the_map_message(self):
+        code, headers, body = provenance.era5_unavailable(7, "single-levels", SINGLE_END)
+        self.assertEqual(code, 416)
+        self.assertEqual(json.loads(body), {
+            "status": "error", "taskID": 7, "lastERA5": SINGLE_END,
+            "errorMessage": "ERA5 single-levels data not available from 2025-11-12 23:00:00. "
+                            "Request only pressure with earlier date."})
+
+
 class Envelope(unittest.TestCase):
     groups = {"era5": {"dataset": "land"}, "dem": {"asset": "x", "factor": 4}}
 
@@ -204,8 +245,7 @@ class MapEndpoint(unittest.TestCase):
     def setUpClass(cls):
         module = load_endpoint("map")
         obj = module.GP_map_v2.__new__(module.GP_map_v2)
-        obj.endERA5_single, obj.endERA5_land = SINGLE_END, LAND_END
-        obj.endERA5 = min(SINGLE_END, LAND_END)
+        obj.lastHours = provenance.Era5LastHours(lambda: dict(HOURS))
         obj.demFactors = MINMAX_FACTORS
         obj.getMSE_Map = lambda *args, **kwargs: {"format": "GEOTIFF"}
         cls.obj = obj
@@ -243,7 +283,7 @@ class TimeseriesEndpoint(unittest.TestCase):
     def setUpClass(cls):
         module = load_endpoint("timeseries")
         obj = module.GP_timeseries_v2.__new__(module.GP_timeseries_v2)
-        obj.lastHours = HOURS
+        obj.lastHours = provenance.Era5LastHours(lambda: dict(HOURS))
         obj.explicitTimeCollection = lambda *args: "https://url"
         obj.boundingTimeCollection = lambda *args: "https://url"
         obj.checkPosition = lambda coordinates: (*coordinates, 0, False)
@@ -268,13 +308,25 @@ class TimeseriesEndpoint(unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertEqual(list(out["provenance"]), ["code"])
 
+    def test_416_past_the_end_of_era5(self):
+        end = SINGLE_END // 1000
+        self.assertEqual(call(self.obj, {"lon": 6, "lat": 46, "time": [end - 3600, end], "pressure": [1, 1]})[0], 200)
+        code, out = call(self.obj, {"lon": 6, "lat": 46, "time": [end, end + 3600], "pressure": [1, 1]})
+        self.assertEqual(code, 416)
+        self.assertEqual(out["lastERA5"], SINGLE_END)
+        self.assertEqual(out["provenance"]["era5"]["lastHour"], "2025-11-12T23:00:00Z")
+        self.assertEqual(call(self.obj, {"lon": 6, "lat": 46, "startTime": end - 7200, "endTime": end})[0], 200)
+        self.assertEqual(call(self.obj, {"lon": 6, "lat": 46, "startTime": end - 7200, "endTime": end + 3600})[0], 416)
+        code, out = call(self.obj, {"lon": 6, "lat": 46, "startTime": 1, "endTime": end, "dataset": "land"})
+        self.assertEqual((code, out["lastERA5"]), (416, LAND_END))
+
 
 class PressurePathEndpoint(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         module = load_endpoint("pressurePath")
         obj = module.GP_pressurePath.__new__(module.GP_pressurePath)
-        obj.lastHours = HOURS
+        obj.lastHours = provenance.Era5LastHours(lambda: dict(HOURS))
         obj.getPressureAlongPath = lambda *args: {"time": [1]}
         cls.obj = obj
 
@@ -294,13 +346,26 @@ class PressurePathEndpoint(unittest.TestCase):
         _, out = call(self.obj, {"lon": [6], "lat": [46], "time": [1], "variable": ["temperature_2m"]})
         self.assertEqual(list(out["provenance"]), ["code", "era5"])
 
-    def test_unknown_last_hour_is_null(self):
-        self.obj.lastHours = {"single-levels": None, "land": LAND_END}
+    def test_unknown_last_hour_is_null_and_not_checked(self):
+        known = self.obj.lastHours
+        self.obj.lastHours = provenance.Era5LastHours(lambda: {"land": LAND_END})
         try:
-            _, out = call(self.obj, {"lon": [6], "lat": [46], "time": [1], "variable": ["temperature_2m"]})
+            code, out = call(self.obj, {"lon": [6], "lat": [46], "time": [SINGLE_END // 1000 + 86400],
+                                        "variable": ["temperature_2m"]})
         finally:
-            self.obj.lastHours = HOURS
+            self.obj.lastHours = known
+        self.assertEqual(code, 200)
         self.assertIsNone(out["provenance"]["era5"]["lastHour"])
+
+    def test_416_past_the_end_of_era5(self):
+        between = LAND_END // 1000 + 3600  # after the end of ERA5-Land, before that of single levels
+        body = {"lon": [6, 6], "lat": [46, 46], "time": [1, between], "variable": ["temperature_2m"]}
+        self.assertEqual(call(self.obj, body)[0], 200)
+        code, out = call(self.obj, dict(body, dataset="both"))
+        self.assertEqual((code, out["lastERA5"]), (416, LAND_END))
+        self.assertEqual(out["errorMessage"],
+                         "ERA5 both data not available from 2025-11-12 00:00:00. Request only pressure with earlier date.")
+        self.assertEqual(list(out["provenance"]), ["code", "era5"])
 
 
 class ElevationPathEndpoint(unittest.TestCase):
@@ -317,6 +382,9 @@ class ElevationPathEndpoint(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(out["provenance"]["dem"], {"asset": provenance.DEM_PERCENTILE, "factor": 10})
         self.assertEqual(list(out["provenance"]), ["code", "dem"])
+
+    def test_no_debug_getinfo(self):
+        self.assertNotIn("print(elevation_image.getInfo())", (ROOT / "elevationPath" / "elevationPath.py").read_text())
 
 
 class MapMaskSplit(unittest.TestCase):

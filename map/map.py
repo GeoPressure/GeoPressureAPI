@@ -34,7 +34,10 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy
 
 from GEE_API_server import GEE_Service
-from provenance import DEM_MINMAX, add_provenance, altitude_group, dem_factors, dem_group, era5_group
+from provenance import (
+    DEM_MINMAX, Era5LastHours, add_provenance, altitude_group, dem_factors, dem_group, era5_group,
+    era5_last_hours, era5_unavailable,
+)
 
 # Get number of CPU cores for parallel processing
 numCores = os.cpu_count()
@@ -94,10 +97,6 @@ class GP_map_v2(GEE_Service):
         """
         super(GP_map_v2, self).__init__(service_account, apiKeyFile, highvolume)
         
-        # Get the last available timestamp for ERA5 data to validate requests
-        self.endERA5 = 1
-        self.endERA5_land = 1
-        self.endERA5_single = 1
        # Load reference geopotential and DEM data
         geoPotLand = self.ee.Image(
             "projects/earthimages4unil/assets/PostDocProjects/rafnuss/Geopot_ERA5"
@@ -149,23 +148,12 @@ class GP_map_v2(GEE_Service):
         self.era5_land = era5_land
         self.era5_single = era5_single
 
-        # Last available timestamp, per dataset. The availability check has to match
-        # the collection that is actually queried: the two collections do not end at
-        # the same date, so gating everything on Land either rejects a
-        # single-levels request that could be served, or lets one through that
-        # returns empty maps.
-        self.endERA5_land = (
-            self.era5_land.filterDate("2024", "2100")
-            .aggregate_max("system:time_start")
-            .getInfo()
-        )
-        self.endERA5_single = (
-            self.era5_single.filterDate("2024", "2100")
-            .aggregate_max("system:time_start")
-            .getInfo()
-        )
-        # "both" joins the two collections, so it ends with the earlier of the two.
-        self.endERA5 = min(self.endERA5_land, self.endERA5_single)
+        # Last available timestamp, per dataset, re-read every 6 h. The availability
+        # check has to match the collection that is actually queried: the two
+        # collections do not end at the same date, so gating everything on Land either
+        # rejects a single-levels request that could be served, or lets one through
+        # that returns empty maps. "both" ends with the earlier of the two.
+        self.lastHours = Era5LastHours(lambda: era5_last_hours(self.ee))
 
         # Layers of the DEM collection, to report the one a request uses (provenance)
         self.demFactors = dem_factors(self.ee, DEM_MINMAX)
@@ -178,13 +166,9 @@ class GP_map_v2(GEE_Service):
             dataset (str): "land", "single-levels" or "both"
 
         Returns:
-            int: UNIX timestamp in milliseconds
+            int: UNIX timestamp in milliseconds, or None if unknown
         """
-        if str(dataset).lower() == "single-levels":
-            return self.endERA5_single
-        if str(dataset).lower() == "land":
-            return self.endERA5_land
-        return self.endERA5
+        return self.lastHours.get(dataset)
 
 
     def getMSE_Map(
@@ -752,22 +736,8 @@ class GP_map_v2(GEE_Service):
             # Check if requested time range is within ERA5 data availability, for
             # the dataset that will actually be queried.
             endERA5 = self.getEndERA5(dataset)
-            if numpy.array(time).max() * 1000 > endERA5:
-                return (
-                    416,
-                    {"Content-type": "application/json"},
-                    json.JSONEncoder().encode(
-                        {
-                            "status": "error",
-                            "taskID": timeStamp,
-                            "errorMessage": "ERA5 {} data not available from {}. Request only pressure with earlier date.".format(
-                                dataset,
-                                datetime.datetime.utcfromtimestamp(endERA5 / 1000),
-                            ),
-                            "lastERA5": endERA5,
-                        }
-                    ),
-                )
+            if endERA5 is not None and numpy.array(time).max() * 1000 > endERA5:
+                return era5_unavailable(timeStamp, dataset, endERA5)
 
             # Process the map generation request
             data = self.getMSE_Map(

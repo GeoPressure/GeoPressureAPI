@@ -16,7 +16,8 @@ GLOBALS = {"math": math, "datetime": datetime, "json": json, "GEE_Service": obje
            "ALTITUDE_FORMULAS": ALTITUDE_FORMULAS, "gpt3_lapse_rate": gpt3_lapse_rate,
            "pressure_to_altitude": pressure_to_altitude,
            **{name: getattr(provenance, name) for name in
-              ("add_provenance", "altitude_group", "era5_group", "era5_last_hours", "last_hour")}}
+              ("Era5LastHours", "add_provenance", "altitude_group", "era5_group", "era5_last_hours",
+               "era5_unavailable")}}
 # Load endpoint definitions without importing/authenticating the Earth Engine service.
 exec(compile(ast.Module(body=[n for n in TREE.body if not isinstance(n, (ast.Import, ast.ImportFrom))],
                         type_ignores=[]), str(SOURCE), "exec"), GLOBALS)
@@ -26,7 +27,7 @@ CLASS = GLOBALS["GP_timeseries_v2"]
 def make_processor():
     """The endpoint without its Earth Engine start-up (service account, last ERA5 hours)."""
     processor = CLASS.__new__(CLASS)
-    processor.lastHours = {"single-levels": None, "land": None}
+    processor.lastHours = provenance.Era5LastHours(lambda: {})  # unknown: no 416 check
     return processor
 
 ALTITUDE = next(n for n in ast.walk(TREE) if isinstance(n, ast.FunctionDef) and n.name == "getAltitude")

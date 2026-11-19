@@ -13,12 +13,17 @@ The object has up to four groups. An endpoint leaves out the groups it does not 
     the function folder. Compute it from a checkout with `python3 provenance.py <folder>`.
   - startedAt: when this instance loaded the code.
 - era5: dataset, collections and geopotential (first takes precedence), lastHour (last ERA5 hour
-  available, read once when the instance starts) and cell (how a position picks its ERA5 cell).
+  available, cached per instance and re-read every 6 h, see Era5LastHours) and cell (how a
+  position picks its ERA5 cell).
 - altitude: formula and lapseRate of the barometric formula.
 - dem: asset and factor (pixels per degree) of the DEM layer used.
 
-No value changes from one request to the next on the same instance, so that clients can collapse
-the objects of many requests. Unknown values are null, which means the same as a missing key.
+No value changes from one request to the next on the same instance (except lastHour when it is
+re-read), so that clients can collapse the objects of many requests. Unknown values are null,
+which means the same as a missing key.
+
+This module also holds the ERA5 availability check shared by the endpoints: requests past the
+last available hour are answered with HTTP 416 (era5_unavailable).
 """
 
 import datetime
@@ -26,6 +31,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 ERA5_COLLECTION = {"single-levels": "ECMWF/ERA5/HOURLY", "land": "ECMWF/ERA5_LAND/HOURLY"}
@@ -36,6 +42,9 @@ ERA5_GEOPOTENTIAL = {
 DEM_MINMAX = "projects/earthimages4unil/assets/PostDocProjects/rafnuss/GLO_minMax_reduced"
 DEM_PERCENTILE = "projects/earthimages4unil/assets/PostDocProjects/rafnuss/GLO_reduced"
 LAPSE_RATE = {"virtual": "gpt3_1", "standard": "-6.5 K/km"}
+
+LAST_HOUR_MAX_AGE = 6 * 3600  # s; ERA5 grows by a day at a time, a few days behind real time
+LAST_HOUR_RETRY = 60  # s; retry sooner while a collection's last hour is unknown
 
 SOURCE_PATTERNS = ("*.py", "requirements.txt", "*.csv.gz")
 GROUPS = ("code", "era5", "altitude", "dem")
@@ -145,6 +154,55 @@ def last_hour(hours, dataset):
     used = dataset_used(dataset)
     values = list(hours.values()) if used == "both" else [hours.get(used)]
     return None if None in values else min(values)
+
+
+class Era5LastHours:
+    """Last available hour (UNIX ms) of each ERA5 collection, cached per instance.
+
+    Read when the instance starts, then again on the first request more than max_age seconds
+    later, so that a warm instance does not reject hours ERA5 has gained since. While a value is
+    unknown (the query failed), it is retried after `retry` seconds; a failed re-read keeps the
+    previous value.
+    """
+
+    def __init__(self, reader, max_age=LAST_HOUR_MAX_AGE, retry=LAST_HOUR_RETRY, clock=time.time):
+        self.reader, self.max_age, self.retry, self.clock = reader, max_age, retry, clock
+        self.hours = {name: None for name in ERA5_COLLECTION}
+        self.refresh()
+
+    def refresh(self):
+        new = self.reader()
+        self.hours = {
+            name: new.get(name) if new.get(name) is not None else self.hours.get(name)
+            for name in ERA5_COLLECTION
+        }
+        self.read_at = self.clock()
+
+    def get(self, dataset):
+        """Last hour of the dataset queried (UNIX ms), or None if unknown."""
+        age = self.clock() - self.read_at
+        if age > self.max_age or (None in self.hours.values() and age > self.retry):
+            self.refresh()
+        return last_hour(self.hours, dataset)
+
+
+def era5_unavailable(task_id, dataset, last_hour_ms):
+    """HTTP 416 response for a request past the last available ERA5 hour."""
+    last = datetime.datetime.fromtimestamp(last_hour_ms / 1000, datetime.timezone.utc)
+    return (
+        416,
+        {"Content-type": "application/json"},
+        json.JSONEncoder().encode(
+            {
+                "status": "error",
+                "taskID": task_id,
+                "errorMessage": "ERA5 {} data not available from {}. Request only pressure with earlier date.".format(
+                    dataset, last.replace(tzinfo=None)
+                ),
+                "lastERA5": last_hour_ms,
+            }
+        ),
+    )
 
 
 def dem_factors(ee, asset):

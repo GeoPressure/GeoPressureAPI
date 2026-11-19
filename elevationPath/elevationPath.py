@@ -117,9 +117,6 @@ class GP_elevationPath(GEE_Service):
             .first()
         )
 
-        # Debug: Print selected DEM info (remove in production)
-        print(elevation_image.getInfo())
-
         # Convert path to Earth Engine LineString and extract coordinates
         line_points = self.ee.Geometry.LineString(path).coordinates()
 

@@ -24,6 +24,7 @@ Please [file an issue](https://github.com/GeoPressure/GeoPressureAPI/issues/new)
 - **Grid cell:** `/pressurePath/` and `/timeseries/` sample each position at the centre of the ERA5 cell holding it: the nearest grid point, with ties going east, and north (single levels) or south (ERA5-Land). GeoPressureR's ARCO backend uses the same rule. A point exactly on a cell edge, such as every position of a GeoPressureR map at `scale = 4`, would otherwise be sampled from either neighbour at random.
 - **Success:** `{"status": "success", "taskID": ..., "data": {...}, "provenance": {...}}`. The fields documented below are inside `data`.
 - **Error:** HTTP `400` with `{"status": "error", "taskID": ..., "errorMessage": ..., "advice": ..., "provenance": {...}}`.
+- **Past the end of ERA5:** `/map/`, `/timeseries/` and `/pressurePath/` answer HTTP `416` with `{"status": "error", "taskID": ..., "errorMessage": ..., "lastERA5": ..., "provenance": {...}}` when a requested time is after the last available hour of the selected `dataset` (`lastERA5`, UNIX ms; with `"both"`, the earlier end of the two collections). Each service instance reads these last hours when it starts and again every 6 h, so it does not reject hours ERA5 has gained since.
 - **Provenance:** every JSON response ends with a `provenance` object describing the code and the data that served it (see [Provenance](#provenance)). Its `code` group is also sent, as compact JSON `{"code": {...}}`, in the `X-GeoPressure-Provenance` header of every response, including the plain-text ones.
 
 ### Provenance
@@ -40,7 +41,7 @@ Please [file an issue](https://github.com/GeoPressure/GeoPressureAPI/issues/new)
 | `era5` | `dataset` | `"single-levels"`, `"land"` or `"both"`, as queried |
 | | `collections` | Earth Engine ERA5 collections; with `"both"`, ERA5-Land first, as it takes precedence |
 | | `geopotential` | Ground level of the barometric formula, in the same order |
-| | `lastHour` | Last ERA5 hour available, read once when the instance started |
+| | `lastHour` | Last ERA5 hour available, as used for the `416` check (see Past the end of ERA5) |
 | | `cell` | `"centre"`: each position takes the ERA5 cell holding it (see Grid cell); `"nearest"`: Earth Engine's nearest-neighbour resampling onto the map grid |
 | `altitude` | `formula` | `"virtual"` or `"standard"` (see [Altitude formula](#altitude-formula)); the map mask always uses `"standard"` |
 | | `lapseRate` | `"gpt3_1"` (GPT3 grid) or `"-6.5 K/km"` |
@@ -117,7 +118,7 @@ Computes, for each `label` (e.g. a stationary period), a map of pressure mismatc
 | `includeMask`, `maskThreshold` | | Values applied |
 | `includeMaskSplit`, `bands` | | Only with `includeMaskSplit = true`: `true`, and the band names of each GeoTIFF in order |
 
-If `time` extends past the last available ERA5 hour of the selected `dataset`, the request fails with HTTP `416` and a `lastERA5` field (ms).
+If `time` extends past the last available ERA5 hour of the selected `dataset`, the request fails with HTTP `416` and a `lastERA5` field (ms) (see [Conventions](#conventions)).
 
 Each GeoTIFF contains:
 
@@ -194,6 +195,8 @@ Provide either `time` + `pressure`, or `startTime` + `endTime`.
 | `distInter` | `number` | Distance the location was moved (m; `0` if on land) |
 
 The CSV has columns `time`, `pressure` (ERA5 surface pressure) and, with geolocator `pressure`, `altitude`.
+
+If `time` (or `endTime`) is after the last available ERA5 hour of the selected `dataset`, the request fails with HTTP `416` and a `lastERA5` field (ms), as on [`/map/`](#1-pressure-map).
 
 ### Example
 
@@ -324,7 +327,7 @@ See the [altitude validation report](https://geopressure.github.io/altitude-vali
 
 ### Response
 
-`data` contains one array per requested variable, plus `time` (the input timestamps) and `altitude` (if `pressure` was provided). Points where any requested value is missing (e.g. over water with `"land"`) are dropped, so arrays can be shorter than the input.
+`data` contains one array per requested variable, plus `time` (the input timestamps) and `altitude` (if `pressure` was provided). Points where any requested value is missing (e.g. over water with `"land"`) are dropped, so arrays can be shorter than the input. If `time` is after the last available ERA5 hour of the selected `dataset`, the request fails with HTTP `416` and a `lastERA5` field (ms), as on [`/map/`](#1-pressure-map).
 
 When `pressure` is provided with `dataset="land"` or `"both"`, the response has an extra top-level `warning` field.
 

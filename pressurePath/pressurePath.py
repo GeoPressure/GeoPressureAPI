@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from GEE_API_server import GEE_Service
 from altitude import ALTITUDE_FORMULAS, era5_grid_snap, gpt3_lapse_rate, pressure_to_altitude
-from provenance import add_provenance, altitude_group, era5_group, era5_last_hours, last_hour
+from provenance import Era5LastHours, add_provenance, altitude_group, era5_group, era5_last_hours, era5_unavailable
 
 # Get number of CPU cores for parallel processing
 numCores = os.cpu_count()
@@ -160,8 +160,9 @@ class GP_pressurePath(GEE_Service):
         self.era5_land=era5_land;
         self.era5_single=era5_single;
 
-        # Last available hour of each ERA5 collection, read once per instance (provenance)
-        self.lastHours = era5_last_hours(self.ee)
+        # Last available hour of each ERA5 collection, re-read every 6 h: requests past it
+        # get HTTP 416, and it is reported in provenance
+        self.lastHours = Era5LastHours(lambda: era5_last_hours(self.ee))
 
     def getPressureAlongPath(  # Fixed typo: was "getPresureAlongPath"
         self,
@@ -508,11 +509,16 @@ class GP_pressurePath(GEE_Service):
                 timeStamp, "Pressure, time and path arrays must have the same length."
             )
 
-        groups["era5"] = era5_group(dataset, last_hour(self.lastHours, dataset), "centre")
+        lastERA5 = self.lastHours.get(dataset)
+        groups["era5"] = era5_group(dataset, lastERA5, "centre")
         if pressure:
             groups["altitude"] = altitude_group(altitudeFormula)
 
         try:
+            # Reject times past the last available ERA5 hour, as /map/ does
+            if lastERA5 is not None and max(time) * 1000 > lastERA5:
+                return era5_unavailable(timeStamp, dataset, lastERA5)
+
             # Process the request
             data = self.getPressureAlongPath(  # Fixed method name
                 path, time, pressure, variable, workers, dataset, altitudeFormula
