@@ -15,7 +15,7 @@ import math
 import os
 
 from GEE_API_server import GEE_Service
-from altitude import ALTITUDE_FORMULAS, gpt3_lapse_rate, pressure_to_altitude
+from altitude import ALTITUDE_FORMULAS, era5_grid_snap, gpt3_lapse_rate, pressure_to_altitude
 
 
 
@@ -94,7 +94,10 @@ class GP_timeseries_v2(GEE_Service):
                 )
                 .rename("time")
                 .toLong()
-            ).sample(region=self.ee.Geometry.Point(coordinates), scale=10, numPixels=1)
+            ).sample(region=point, scale=10, numPixels=1)
+
+        # Sample the centre of the ERA5 cell, as GeoPressureR does (see era5_grid_snap)
+        point = self.ee.Geometry.Point(era5_grid_snap(coordinates[0], coordinates[1], dataset))
 
         # Load the selected ERA5 pressure product
         ERA5_pressure = (  # Fixed typo: was "ERA5_pressur"
@@ -156,6 +159,9 @@ class GP_timeseries_v2(GEE_Service):
                     "lapse": measurement_list.get(2),
                 },
             )
+
+        # Sample the centre of the ERA5 cell, as GeoPressureR does (see era5_grid_snap)
+        point = self.ee.Geometry.Point(era5_grid_snap(coordinates[0], coordinates[1], dataset))
 
         # Combine time, pressure and the GPT3 lapse rate, computed here per timestamp
         lapse = gpt3_lapse_rate([coordinates[0]] * len(time), [coordinates[1]] * len(time), time)
@@ -240,9 +246,7 @@ class GP_timeseries_v2(GEE_Service):
                     .divide(1000)
                     .toLong()
                 )
-                .sample(
-                    region=self.ee.Geometry.Point(coordinates), scale=1, numPixels=1
-                )
+                .sample(region=point, scale=1, numPixels=1)
             )
 
         # Process all measurements and generate output
