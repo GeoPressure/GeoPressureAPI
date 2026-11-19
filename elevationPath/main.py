@@ -14,6 +14,7 @@ import os
 import tempfile
 
 from elevationPath import *
+from version import VERSION_HEADER, add_version
 
 # Configuration
 highVolumeEndpoint = True  # Fixed typo: was "hightVolumeEndpoint"
@@ -66,14 +67,15 @@ def elevationPath(request):
         - percentile: Array of percentiles to compute (default: [10, 50, 90])
 
     Response Format:
-        Success: {"status": "success", "taskID": timestamp, "data": {...}}
-        Error: {"status": "error", "taskID": timestamp, "errorMessage": "...", "advice": "..."}
+        Success: {"status": "success", "taskID": timestamp, "data": {...}, "version": {...}}
+        Error: {"status": "error", "taskID": timestamp, "errorMessage": "...", "advice": "...", "version": {...}}
     """
     # Default CORS headers for cross-origin requests
     default_headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST,OPTIONS",
         "Access-Control-Allow-Headers": "Accept, Content-Type",
+        "X-GeoPressure-Version": VERSION_HEADER,
     }
 
     # Handle preflight OPTIONS request for CORS
@@ -89,7 +91,11 @@ def elevationPath(request):
                 code, type_response, response = process.singleRequest(
                     request_json, None
                 )
-                return (response, code, {**default_headers, **type_response})
+                return (
+                    add_version(response),
+                    code,
+                    {**default_headers, **type_response},
+                )
             except Exception as e:
                 print(f"Catastrophic error in elevation path processing: {e}")
                 import traceback

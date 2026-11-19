@@ -14,6 +14,7 @@ import os
 import tempfile
 
 from map import *
+from version import VERSION_HEADER, add_version
 
 # Configuration
 highVolumeEndpoint = False  # Fixed typo: was "hightVolumeEndpoint"
@@ -68,16 +69,18 @@ def map(request):
         - margin (float): Altitude tolerance in meters (default: 30)
         - includeMask (bool): Include altitude probability mask (default: True)
         - maskThreshold (float): Probability threshold for masking (default: 0.9)
+        - includeMaskDirection (bool): Add fracAbove and fracBelow bands (default: False)
 
     Response Format:
-        Success: {"status": "success", "taskID": timestamp, "data": {...}}
-        Error: {"status": "error", "taskID": timestamp, "errorMessage": "...", "advice": "..."}
+        Success: {"status": "success", "taskID": timestamp, "data": {...}, "version": {...}}
+        Error: {"status": "error", "taskID": timestamp, "errorMessage": "...", "advice": "...", "version": {...}}
     """
     # Default CORS headers for cross-origin requests
     default_headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST,OPTIONS",
         "Access-Control-Allow-Headers": "Accept, Content-Type",
+        "X-GeoPressure-Version": VERSION_HEADER,
     }
 
     # Handle preflight OPTIONS request for CORS
@@ -93,7 +96,11 @@ def map(request):
                 code, type_response, response = process.singleRequest(
                     request_json, None
                 )
-                return (response, code, {**default_headers, **type_response})
+                return (
+                    add_version(response),
+                    code,
+                    {**default_headers, **type_response},
+                )
             except Exception as e:
                 print(f"Catastrophic error in map processing: {e}")
                 import traceback

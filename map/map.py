@@ -200,6 +200,7 @@ class GP_map_v2(GEE_Service):
         maskThreshold=0.9,
         dataset="single-levels",
         landDensityThreshold=0,
+        includeMaskDirection=False,
     ):
         """
         Generate MSE-based probability maps for geolocator analysis.
@@ -220,6 +221,7 @@ class GP_map_v2(GEE_Service):
             margin (float): Altitude tolerance margin in meters (default: 30)
             maskThreshold (float): Probability threshold for masking (default: 0.9)
             landDensityThreshold (float): Minimum land-density threshold (default: 0)
+            includeMaskDirection (bool): Add the fracAbove and fracBelow bands (default: False)
             
         Returns:
             dict: Contains GeoTIFF URLs, metadata, and processing information
@@ -276,6 +278,11 @@ class GP_map_v2(GEE_Service):
                 hours.add(floor_hour * 1000)
                 hours.add((floor_hour + 3600) * 1000)
             return sorted(hours)
+
+        # Bands of each GeoTIFF, in order
+        outputBands = ["mse"] + (["probAlt"] if includeMask else [])
+        if includeMaskDirection:
+            outputBands += ["fracAbove", "fracBelow"]
 
         def runMSEmatch(labelFeature, hoursNeeded):
             """
@@ -425,7 +432,20 @@ class GP_map_v2(GEE_Service):
                     .toFloat()
                 )
 
-                return error.multiply(error).addBands(isPossible).rename(["mse", "probAlt"])
+                if not includeMaskDirection:
+                    return error.multiply(error).addBands(isPossible).rename(["mse", "probAlt"])
+
+                # Which side of the ground range the altitude falls on, when it falls outside.
+                # probAlt + fracAbove + fracBelow = 1 wherever dh is defined.
+                isAbove = dh.gt(altIm.select("DEM_max").add(margin)).toFloat()
+                isBelow = dh.lt(altIm.select("DEM_min").add(-margin)).toFloat()
+                return (
+                    error.multiply(error)
+                    .addBands(isPossible)
+                    .addBands(isAbove)
+                    .addBands(isBelow)
+                    .rename(["mse", "probAlt", "fracAbove", "fracBelow"])
+                )
 
             # Calculate MSE map across all measurements for this label
             aggregatedMap = self.ee.ImageCollection(era5_labelFeature.map(getError)).mean()  # Fixed typo: was "agregatedMap"
@@ -441,7 +461,10 @@ class GP_map_v2(GEE_Service):
                 )
 
             # Remove altitude band if not requested in output
-            if not includeMask:
+            if includeMaskDirection:
+                # Fix the band order: addBands(..., overwrite) above may move "mse"
+                aggregatedMap = aggregatedMap.select(outputBands)
+            elif not includeMask:
                 aggregatedMap = aggregatedMap.select("mse")
 
             # Apply ERA5 data mask and fill missing areas
@@ -524,7 +547,7 @@ class GP_map_v2(GEE_Service):
             executor.map(getEEUrl, listLabel_py)
         end_time = tm.time()
 
-        return {
+        response = {
             "format": "GEOTIFF",
             "labels": listLabel_py,
             "urls": [urls[label_id] for label_id in listLabel_py],
@@ -536,6 +559,11 @@ class GP_map_v2(GEE_Service):
             "includeMask": includeMask,
             "maskThreshold": maskThreshold,
         }
+        # Only added when requested, so that default responses are unchanged
+        if includeMaskDirection:
+            response["includeMaskDirection"] = True
+            response["bands"] = outputBands
+        return response
 
     def singleRequest(self, jsonObj, requestType):
         """
@@ -564,6 +592,7 @@ class GP_map_v2(GEE_Service):
             - margin: Altitude tolerance in meters (default: 30)
             - includeMask: Include altitude probability mask (default: True)
             - maskThreshold: Probability threshold for masking (default: 0.9)
+            - includeMaskDirection: Add fracAbove and fracBelow bands (default: False)
         """
         timeStamp = math.floor(datetime.datetime.utcnow().timestamp())
 
@@ -658,6 +687,15 @@ class GP_map_v2(GEE_Service):
         if "landDensityThreshold" in jsonObj.keys():
             landDensityThreshold = jsonObj["landDensityThreshold"]
 
+        # Optional split of the mask into above/below the ground range (off by default)
+        includeMaskDirection = False
+        if "includeMaskDirection" in jsonObj.keys():
+            includeMaskDirection = jsonObj["includeMaskDirection"]
+            if not isinstance(includeMaskDirection, bool):
+                return printErrorMessage(
+                    timeStamp, "includeMaskDirection should be true or false."
+                )
+
         # Calculate output image dimensions
         sizeLon = (E - W) * scale
         sizeLat = (N - S) * scale
@@ -734,6 +772,7 @@ class GP_map_v2(GEE_Service):
                 maskThreshold,
                 dataset,
                 landDensityThreshold,
+                includeMaskDirection,
             )
             response = {"status": "success", "taskID": timeStamp, "data": data}
             return (

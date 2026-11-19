@@ -14,6 +14,7 @@ import os
 import tempfile
 
 from pressurePath import *
+from version import VERSION_HEADER, add_version
 
 # Configuration
 highVolumeEndpoint = True  # Fixed typo: was "hightVolumeEndpoint"
@@ -73,15 +74,16 @@ def pressurePath(request):
         - workers: Number of processing chunks (default: 10)
 
     Response Format:
-        Success: {"status": "success", "taskID": timestamp, "data": {...}}
+        Success: {"status": "success", "taskID": timestamp, "data": {...}, "version": {...}}
                  plus "warning" when altitude was computed from "land"/"both"
-        Error: {"status": "error", "taskID": timestamp, "errorMessage": "...", "advice": "..."}
+        Error: {"status": "error", "taskID": timestamp, "errorMessage": "...", "advice": "...", "version": {...}}
     """
     # Default CORS headers for cross-origin requests
     default_headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST,OPTIONS",
         "Access-Control-Allow-Headers": "Accept, Content-Type",
+        "X-GeoPressure-Version": VERSION_HEADER,
     }
 
     # Handle preflight OPTIONS request for CORS
@@ -97,7 +99,11 @@ def pressurePath(request):
                 code, type_response, response = process.singleRequest(
                     request_json, None
                 )
-                return (response, code, {**default_headers, **type_response})
+                return (
+                    add_version(response),
+                    code,
+                    {**default_headers, **type_response},
+                )
             except Exception as e:
                 print(f"Catastrophic error in pressure path processing: {e}")
                 import traceback

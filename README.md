@@ -22,8 +22,32 @@ Please [file an issue](https://github.com/GeoPressure/GeoPressureAPI/issues/new)
 - **Units:** time as [UNIX timestamps](https://en.wikipedia.org/wiki/Unix_time) in seconds, pressure in Pa, coordinates in WGS84 degrees, distances and altitudes in m.
 - **Time matching:** each timestamp is paired with the closest ERA5 hour within ±1 h.
 - **Grid cell:** `/pressurePath/` and `/timeseries/` sample each position at the centre of the ERA5 cell holding it: the nearest grid point, with ties going east, and north (single levels) or south (ERA5-Land). GeoPressureR's ARCO backend uses the same rule. A point exactly on a cell edge, such as every position of a GeoPressureR map at `scale = 4`, would otherwise be sampled from either neighbour at random.
-- **Success:** `{"status": "success", "taskID": ..., "data": {...}}`. The fields documented below are inside `data`.
-- **Error:** HTTP `400` with `{"status": "error", "taskID": ..., "errorMessage": ..., "advice": ...}`.
+- **Success:** `{"status": "success", "taskID": ..., "data": {...}, "version": {...}}`. The fields documented below are inside `data`.
+- **Error:** HTTP `400` with `{"status": "error", "taskID": ..., "errorMessage": ..., "advice": ..., "version": {...}}`.
+- **Version:** every JSON response ends with a `version` object that identifies the code serving it (see [Version](#version)). The same object is sent, as compact JSON, in the `X-GeoPressure-Version` header of every response, including the plain-text ones.
+
+### Version
+
+| Field | Description |
+| ----- | ----------- |
+| `commit` | Git commit the deployment was built from (`GIT_COMMIT`, set at deploy); `null` if not set |
+| `deployedAt` | Deploy time, ISO 8601 UTC (`DEPLOYED_AT`, set at deploy); `null` if not set |
+| `service`, `revision` | Cloud Run / Cloud Functions service and revision (`K_SERVICE`, `K_REVISION`); `null` when not on Google Cloud |
+| `sourceHash` | First 12 hex digits of the SHA-256 of the function folder's `*.py`, `requirements.txt` and `*.csv.gz` files; always present |
+| `startedAt` | When the serving instance started, ISO 8601 UTC |
+
+`sourceHash` needs nothing from the deployer: to check which code an endpoint serves, run `python3 version.py map timeseries pressurePath elevationPath` in a checkout and compare. Each endpoint has its own hash.
+
+```json
+"version": {
+  "commit": "65a2119...",
+  "deployedAt": "2026-11-19T10:00:00Z",
+  "service": "timeseries",
+  "revision": "timeseries-00042-abc",
+  "sourceHash": "3f2a9c1b7d4e",
+  "startedAt": "2026-11-19T10:05:12Z"
+}
+```
 
 ---
 
@@ -48,6 +72,7 @@ Computes, for each `label` (e.g. a stationary period), a map of pressure mismatc
 | `maskThreshold` | `number` | | `0.9` | MSE pixels whose mask is below this value are set to `-1`; `0` disables |
 | `landDensityThreshold` | `number` | | `0` | Minimum land fraction (0–1) of an ERA5 pixel to be kept |
 | `dataset` | `string` | | `"single-levels"` | `"single-levels"`, `"land"` or `"both"` (see [§4](#4-pressure-data-along-a-path)) |
+| `includeMaskDirection` | `boolean` | | `false` | Add the `fracAbove` and `fracBelow` bands (see below) |
 
 ### Response
 
@@ -62,6 +87,7 @@ Computes, for each `label` (e.g. a stationary period), a map of pressure mismatc
 | `bbox` | `object` | `{W, S, E, N}` |
 | `time2GetUrls` | `number` | Time spent generating URLs (s) |
 | `includeMask`, `maskThreshold` | | Values applied |
+| `includeMaskDirection`, `bands` | | Only with `includeMaskDirection = true`: `true`, and the band names of each GeoTIFF in order |
 
 If `time` extends past the last available ERA5 hour of the selected `dataset`, the request fails with HTTP `416` and a `lastERA5` field (ms).
 
@@ -69,7 +95,10 @@ Each GeoTIFF contains:
 
 - **Band 1 – MSE**: [mean square error](https://en.wikipedia.org/wiki/Mean_squared_error) between geolocator and ERA5 surface pressure, after removing the mean of each (so an unknown constant altitude offset does not matter).
 - **Band 2 – Mask** _(if `includeMask`)_: proportion of measurements whose altitude, from the [barometric formula](https://en.wikipedia.org/wiki/Barometric_formula), falls within the ground elevation range of the pixel (Copernicus GLO DEM min/max) ± `margin`.
-- **Special values:** `-1` below `maskThreshold`, `-2` water / no data.
+- **Bands 3–4 (or 2–3 without the mask) – `fracAbove`, `fracBelow`** _(if `includeMaskDirection`)_: proportion of measurements whose altitude is above the ground range + `margin` (the bird flew, perched high or climbed during the label) and below the ground range − `margin` (sensor offset, or a valley lower than the pixel's ground). On land, mask + `fracAbove` + `fracBelow` = 1.
+- **Special values:** `-1` below `maskThreshold` (MSE band only), `-2` water / no data (all bands).
+
+With `includeMaskDirection` unset or `false`, the response and the GeoTIFFs are unchanged.
 
 ### Example
 
@@ -327,12 +356,19 @@ Each folder (`map/`, `timeseries/`, `elevationPath/`, `pressurePath/`) is a stan
 
 A push to `main` deploys each folder as it is, so a function can only import files inside its own folder.
 
-The virtual formula and the ERA5 cell rule (`era5_grid_snap()`) are defined in the root `altitude.py`, which computes the GPT3 lapse rate of each point in Python from `gpt3_1_lapse_rate.csv.gz` (the lapse-rate columns of [gpt3_1.grd](https://vmf.geo.tuwien.ac.at/codes/gpt3_1.grd), K/km) and passes it to Earth Engine. `pressurePath/` and `timeseries/` each carry an identical copy of both files, because a function cannot import from outside its folder. After editing either file, copy it into both folders; `tests/test_altitude_copies.py` fails while the copies differ. Run the offline tests with `python3 -m unittest tests.test_timeseries_altitude tests.test_altitude_copies tests.test_era5_grid_snap`. Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
+The virtual formula and the ERA5 cell rule (`era5_grid_snap()`) are defined in the root `altitude.py`, which computes the GPT3 lapse rate of each point in Python from `gpt3_1_lapse_rate.csv.gz` (the lapse-rate columns of [gpt3_1.grd](https://vmf.geo.tuwien.ac.at/codes/gpt3_1.grd), K/km) and passes it to Earth Engine. `pressurePath/` and `timeseries/` each carry an identical copy of both files, because a function cannot import from outside its folder. After editing either file, copy it into both folders; `tests/test_altitude_copies.py` fails while the copies differ. In the same way, each of the four folders carries a copy of the root `version.py`, which builds the [`version`](#version) field; `tests/test_version.py` fails while the copies differ. Run the offline tests with `python3 -m unittest tests.test_timeseries_altitude tests.test_altitude_copies tests.test_era5_grid_snap tests.test_version`. Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
 
 Each function authenticates to Earth Engine with a service account read from two environment variables:
 
 - `GEE_API_ADDRESS`: service account email
 - `GEE_API_KEY`: service account private key
+
+and, optionally, reports the deployed commit from two more, set at each deploy (see [Version](#version)):
+
+- `GIT_COMMIT`: full SHA of the commit deployed
+- `DEPLOYED_AT`: deploy time, ISO 8601 UTC
+
+For example, with `gcloud functions deploy ... --update-env-vars GIT_COMMIT=$(git rev-parse HEAD),DEPLOYED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)`, or `GIT_COMMIT=$COMMIT_SHA` in a Cloud Build trigger.
 
 To run one locally:
 
