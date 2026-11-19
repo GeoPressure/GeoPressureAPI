@@ -72,7 +72,7 @@ Computes, for each `label` (e.g. a stationary period), a map of pressure mismatc
 | `maskThreshold` | `number` | | `0.9` | MSE pixels whose mask is below this value are set to `-1`; `0` disables |
 | `landDensityThreshold` | `number` | | `0` | Minimum land fraction (0–1) of an ERA5 pixel to be kept |
 | `dataset` | `string` | | `"single-levels"` | `"single-levels"`, `"land"` or `"both"` (see [§4](#4-pressure-data-along-a-path)) |
-| `includeMaskDirection` | `boolean` | | `false` | Add the `fracAbove` and `fracBelow` bands (see below) |
+| `includeMaskSplit` | `boolean` | | `false` | Add the `probAbove` and `probBelow` bands (see below) |
 
 ### Response
 
@@ -87,7 +87,7 @@ Computes, for each `label` (e.g. a stationary period), a map of pressure mismatc
 | `bbox` | `object` | `{W, S, E, N}` |
 | `time2GetUrls` | `number` | Time spent generating URLs (s) |
 | `includeMask`, `maskThreshold` | | Values applied |
-| `includeMaskDirection`, `bands` | | Only with `includeMaskDirection = true`: `true`, and the band names of each GeoTIFF in order |
+| `includeMaskSplit`, `bands` | | Only with `includeMaskSplit = true`: `true`, and the band names of each GeoTIFF in order |
 
 If `time` extends past the last available ERA5 hour of the selected `dataset`, the request fails with HTTP `416` and a `lastERA5` field (ms).
 
@@ -95,10 +95,10 @@ Each GeoTIFF contains:
 
 - **Band 1 – MSE**: [mean square error](https://en.wikipedia.org/wiki/Mean_squared_error) between geolocator and ERA5 surface pressure, after removing the mean of each (so an unknown constant altitude offset does not matter).
 - **Band 2 – Mask** _(if `includeMask`)_: proportion of measurements whose altitude, from the [barometric formula](https://en.wikipedia.org/wiki/Barometric_formula), falls within the ground elevation range of the pixel (Copernicus GLO DEM min/max) ± `margin`.
-- **Bands 3–4 (or 2–3 without the mask) – `fracAbove`, `fracBelow`** _(if `includeMaskDirection`)_: proportion of measurements whose altitude is above the ground range + `margin` (the bird flew, perched high or climbed during the label) and below the ground range − `margin` (sensor offset, or a valley lower than the pixel's ground). On land, mask + `fracAbove` + `fracBelow` = 1.
+- **Bands 3–4 (or 2–3 without the mask) – `probAbove`, `probBelow`** _(if `includeMaskSplit`)_: proportion of measurements whose altitude is above the ground range + `margin` (the bird flew, perched high or climbed during the label) and below the ground range − `margin` (sensor offset, or a valley lower than the pixel's ground). On land, mask + `probAbove` + `probBelow` = 1.
 - **Special values:** `-1` below `maskThreshold` (MSE band only), `-2` water / no data (all bands).
 
-With `includeMaskDirection` unset or `false`, the response and the GeoTIFFs are unchanged.
+With `includeMaskSplit` unset or `false`, the response and the GeoTIFFs are unchanged.
 
 ### Example
 

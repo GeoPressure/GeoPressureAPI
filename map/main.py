@@ -69,7 +69,7 @@ def map(request):
         - margin (float): Altitude tolerance in meters (default: 30)
         - includeMask (bool): Include altitude probability mask (default: True)
         - maskThreshold (float): Probability threshold for masking (default: 0.9)
-        - includeMaskDirection (bool): Add fracAbove and fracBelow bands (default: False)
+        - includeMaskSplit (bool): Add probAbove and probBelow bands (default: False)
 
     Response Format:
         Success: {"status": "success", "taskID": timestamp, "data": {...}, "version": {...}}

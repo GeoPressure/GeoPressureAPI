@@ -115,21 +115,21 @@ class AddVersion(unittest.TestCase):
         self.assertEqual(out["version"], version.VERSION)
 
 
-class MapMaskDirection(unittest.TestCase):
+class MapMaskSplit(unittest.TestCase):
     """map.py needs Earth Engine to import; check the request key and band names in the source."""
 
     text = (ROOT / "map" / "map.py").read_text()
 
     def test_flag_and_bands(self):
-        self.assertIn('"includeMaskDirection" in jsonObj.keys()', self.text)
-        self.assertIn('outputBands += ["fracAbove", "fracBelow"]', self.text)
-        self.assertIn('.rename(["mse", "probAlt", "fracAbove", "fracBelow"])', self.text)
+        self.assertIn('"includeMaskSplit" in jsonObj.keys()', self.text)
+        self.assertIn('outputBands += ["probAbove", "probBelow"]', self.text)
+        self.assertIn('.rename(["mse", "probAlt", "probAbove", "probBelow"])', self.text)
 
     def test_default_path_unchanged(self):
         self.assertIn(
             'return error.multiply(error).addBands(isPossible).rename(["mse", "probAlt"])', self.text
         )
-        self.assertIn("includeMaskDirection=False", self.text)
+        self.assertIn("includeMaskSplit=False", self.text)
 
 
 if __name__ == "__main__":
