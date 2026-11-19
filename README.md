@@ -21,7 +21,7 @@ Please [file an issue](https://github.com/GeoPressure/GeoPressureAPI/issues/new)
 - **Requests:** `POST` with a JSON body (`Content-Type: application/json`). The base URL answers with a `307` redirect to the service, so clients must follow redirects (e.g. `curl -L`).
 - **Units:** time as [UNIX timestamps](https://en.wikipedia.org/wiki/Unix_time) in seconds, pressure in Pa, coordinates in WGS84 degrees, distances and altitudes in m.
 - **Time matching:** each timestamp is paired with the closest ERA5 hour within ±1 h.
-- **Grid cell:** `/pressurePath/` and `/timeseries/` sample each position at the centre of the ERA5 cell holding it: the nearest grid point, with ties going east, and north (single levels) or south (ERA5-Land). GeoPressureR's ARCO backend uses the same rule. A point exactly on a cell edge, such as every position of a GeoPressureR map at `scale = 4`, would otherwise be sampled from either neighbour at random.
+- **Grid cell:** `/pressurePath/` and `/timeseries/` sample each position, and `/map/` each pixel centre, at the centre of the ERA5 cell holding it: the nearest grid point, with ties going east, and north (single levels and `"both"`) or south (ERA5-Land). GeoPressureR's ARCO backend uses the same rule. A point exactly on a cell edge, such as every position or pixel centre of a GeoPressureR map at `scale = 4`, would otherwise be sampled from either neighbour: at random for a point, and from the cell to the south-east (single levels) or north-east (ERA5-Land) for a map pixel.
 - **Success:** `{"status": "success", "taskID": ..., "data": {...}, "provenance": {...}}`. The fields documented below are inside `data`.
 - **Error:** HTTP `400` with `{"status": "error", "taskID": ..., "errorMessage": ..., "advice": ..., "provenance": {...}}`.
 - **Past the end of ERA5:** `/map/`, `/timeseries/` and `/pressurePath/` answer HTTP `416` with `{"status": "error", "taskID": ..., "errorMessage": ..., "lastERA5": ..., "provenance": {...}}` when a requested time is after the last available hour of the selected `dataset` (`lastERA5`, UNIX ms; with `"both"`, the earlier end of the two collections). Each service instance reads these last hours when it starts and again every 6 h, so it does not reject hours ERA5 has gained since.
@@ -42,7 +42,7 @@ Please [file an issue](https://github.com/GeoPressure/GeoPressureAPI/issues/new)
 | | `collections` | Earth Engine ERA5 collections; with `"both"`, ERA5-Land first, as it takes precedence |
 | | `geopotential` | Ground level of the barometric formula, in the same order |
 | | `lastHour` | Last ERA5 hour available, as used for the `416` check (see Past the end of ERA5) |
-| | `cell` | `"centre"`: each position takes the ERA5 cell holding it (see Grid cell); `"nearest"`: Earth Engine's nearest-neighbour resampling onto the map grid |
+| | `cell` | `"centre"`: each position or pixel centre takes the ERA5 cell holding it, by the rule of Grid cell |
 | `altitude` | `formula` | `"virtual"` or `"standard"` (see [Altitude formula](#altitude-formula)); the map mask always uses `"standard"` |
 | | `lapseRate` | `"gpt3_1"` (GPT3 grid) or `"-6.5 K/km"` |
 | `dem` | `asset` | Earth Engine DEM collection |
@@ -126,6 +126,9 @@ Each GeoTIFF contains:
 - **Band 2 – Mask** _(if `includeMask`)_: proportion of measurements whose altitude, from the [barometric formula](https://en.wikipedia.org/wiki/Barometric_formula), falls within the ground elevation range of the pixel (Copernicus GLO DEM min/max) ± `margin`.
 - **Bands 3–4 (or 2–3 without the mask) – `probAbove`, `probBelow`** _(if `includeMaskSplit`)_: proportion of measurements whose altitude is above the ground range + `margin` (the bird flew, perched high or climbed during the label) and below the ground range − `margin` (sensor offset, or a valley lower than the pixel's ground). On land, mask + `probAbove` + `probBelow` = 1.
 - **Special values:** `-1` below `maskThreshold` (MSE band only), `-2` water / no data (all bands).
+
+> [!NOTE]
+> **Change of November 2026: ERA5 cell of a map pixel.** Every pixel centre of a map at `scale = 4` lies on the corner of four ERA5 cells. Until then, `/map/` took the cell to the south-east of it, while `/timeseries/`, `/pressurePath/` and GeoPressureR's ARCO backend take the cell to the north-east (see Grid cell). `/map/` now takes the same cell, for the MSE and for the mask (surface pressure, temperature and orography). Maps at `scale = 4` therefore move by one ERA5 row (0.25°) in latitude, and results computed before and after differ slightly. Maps at scales whose pixel centres are not on cell edges (e.g. `scale = 10` with single levels) are unchanged. ERA5-Land maps at `scale = 10` take the cell to the south-east instead of the north-east. A response made after the change has `provenance.era5.cell = "centre"`; one made before has no `provenance`.
 
 With `includeMaskSplit` unset or `false`, the response and the GeoTIFFs are unchanged.
 

@@ -248,7 +248,7 @@ class MapEndpoint(unittest.TestCase):
         obj.lastHours = provenance.Era5LastHours(lambda: dict(HOURS))
         obj.demFactors = MINMAX_FACTORS
         obj.getMSE_Map = lambda *args, **kwargs: {"format": "GEOTIFF"}
-        cls.obj = obj
+        cls.obj, cls.module = obj, module
 
     body = {"W": -18, "S": 4, "E": 16, "N": 51, "time": [1572075000], "pressure": [97766], "label": [1]}
 
@@ -259,9 +259,26 @@ class MapEndpoint(unittest.TestCase):
         self.assertEqual(list(prov), ["code", "era5", "altitude", "dem"])
         self.assertEqual(prov["era5"]["dataset"], "single-levels")
         self.assertEqual(prov["era5"]["lastHour"], "2025-11-12T23:00:00Z")
-        self.assertEqual(prov["era5"]["cell"], "nearest")
+        self.assertEqual(prov["era5"]["cell"], "centre")
         self.assertEqual(prov["altitude"], {"formula": "standard", "lapseRate": "-6.5 K/km"})
         self.assertEqual(prov["dem"], {"asset": provenance.DEM_MINMAX, "factor": 4})
+
+    def test_cell_shift_picks_the_era5_grid_snap_cell(self):
+        # A pixel centre on the corner of four cells, moved against the shift, must land in the
+        # cell era5_grid_snap() picks: the sign of (snap - centre) is the opposite of the shift.
+        sys.path.insert(0, str(ROOT / "timeseries"))
+        try:
+            from altitude import era5_grid_snap
+        finally:
+            sys.path.pop(0)
+        module = self.module
+        corners = {"single-levels": (6.125, 46.875), "both": (6.125, 46.875), "land": (6.05, 45.95)}
+        for dataset, (lon, lat) in corners.items():
+            dlon, dlat = module.era5CellShift(dataset)
+            snap = era5_grid_snap(lon, lat, dataset)
+            with self.subTest(dataset=dataset):
+                self.assertLess(abs(dlon), 1e-5)
+                self.assertEqual((snap[0] > lon, snap[1] > lat), (dlon < 0, dlat < 0))
 
     def test_same_request_same_provenance(self):
         later = dict(self.body, time=[1572078600])

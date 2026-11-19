@@ -42,6 +42,27 @@ from provenance import (
 # Get number of CPU cores for parallel processing
 numCores = os.cpu_count()
 
+# Shift (degrees) applied to ERA5 before it is sampled on the map grid; see era5CellShift()
+CELL_EPSILON = 1e-6
+
+
+def era5CellShift(dataset):
+    """
+    Translation (dlon, dlat), in degrees, that makes each map pixel take the ERA5 cell
+    era5_grid_snap() picks for the pixel centre, as /timeseries/, /pressurePath/ and GeoPressureR
+    do.
+
+    The centre of every pixel of a map at scale = 4 lies on the corner of four ERA5 cells (0.25
+    degree grid), and at scale = 10 on the corner of four ERA5-Land cells (0.1 degree grid).
+    Earth Engine then takes the cell to the south-east (single levels) or north-east
+    (ERA5-Land). Moving ERA5 by a tiny amount west and south (or west and north) makes the pixel
+    centre fall inside the cell to the east and north for single levels and "both", or east and
+    south for ERA5-Land. A pixel centre farther than CELL_EPSILON from a cell edge keeps its cell.
+    """
+    if str(dataset).lower() == "land":
+        return (-CELL_EPSILON, CELL_EPSILON)
+    return (-CELL_EPSILON, -CELL_EPSILON)
+
 
 def printErrorMessage(task_id, errorMessage, adviceMessage="Double check the inputs."):
     """
@@ -331,6 +352,21 @@ class GP_map_v2(GEE_Service):
             ERA5_pressure = ERA5.filter(
                 self.ee.Filter.inList("system:time_start", hoursNeeded)
             ).select(["surface_pressure", "temperature_2m", "geopotential"])
+
+            # Every ERA5 value of the map (MSE, and the mask's surface pressure, 2 m
+            # temperature and geopotential) comes from these images: take them from the
+            # cell era5_grid_snap() picks for each pixel centre. Done before the land mask,
+            # which keeps its own grid.
+            cellShift = era5CellShift(dataset)
+            degrees = self.ee.Projection("EPSG:4326")
+
+            def snapToCell(im):
+                # The time join below needs system:time_start, which translate() drops
+                return im.translate(cellShift[0], cellShift[1], "pixels", degrees).set(
+                    "system:time_start", im.get("system:time_start")
+                )
+
+            ERA5_pressure = ERA5_pressure.map(snapToCell)
 
             ERA5_pressure = ERA5_pressure.map(filterLand)
 
@@ -722,7 +758,7 @@ class GP_map_v2(GEE_Service):
             else:
                 dataset = str(dataset_val)
 
-        groups["era5"] = era5_group(dataset, self.getEndERA5(dataset), "nearest")
+        groups["era5"] = era5_group(dataset, self.getEndERA5(dataset), "centre")
         groups["altitude"] = altitude_group("standard")  # the mask uses the standard formula
         groups["dem"] = dem_group(DEM_MINMAX, self.demFactors, scale)
 

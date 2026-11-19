@@ -103,7 +103,8 @@ def dataset_used(dataset):
 
 
 def era5_group(dataset, last_hour, cell):
-    """ERA5 group; last_hour in UNIX milliseconds (or None), cell "centre" or "nearest"."""
+    """ERA5 group; last_hour in UNIX milliseconds (or None). cell names the rule by which a
+    position picks its ERA5 cell: "centre" is era5_grid_snap(), used by every endpoint."""
     used = dataset_used(dataset)
     order = ["land", "single-levels"] if used == "both" else [used]
     return {
