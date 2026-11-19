@@ -16,7 +16,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from GEE_API_server import GEE_Service
-from altitude import ALTITUDE_FORMULAS, pressure_to_altitude
+from altitude import ALTITUDE_FORMULAS, gpt3_lapse_rate, pressure_to_altitude
 
 # Get number of CPU cores for parallel processing
 numCores = os.cpu_count()
@@ -199,10 +199,11 @@ class GP_pressurePath(GEE_Service):
 
         def makeFeature(measurement_list):
             """
-            Convert list of [time, pressure, coordinates] to Earth Engine Feature.
+            Convert list of [time, pressure, coordinates, lapse] to Earth Engine Feature.
 
             Args:
-                measurement_list: Earth Engine List containing [time, pressure, [lon, lat]]
+                measurement_list: Earth Engine List containing
+                    [time, pressure, [lon, lat], GPT3 lapse rate (K/m)]
 
             Returns:
                 Earth Engine Feature with point geometry and properties
@@ -217,13 +218,17 @@ class GP_pressurePath(GEE_Service):
                         1000
                     ),  # Convert to milliseconds
                     "pressure": measurement_list.get(1),
+                    "lapse": measurement_list.get(3),
                 },
             )
 
-        # Prepare data arrays - use dummy pressure if not provided
-        val = self.ee.List(
-            [time, pressure, path] if pressure else [time, [0] * len(time), path]
-        ).unzip()
+        # Prepare data arrays - use dummy pressure and lapse rate if no pressure is given.
+        # The GPT3 lapse rate is computed here, per point, rather than in Earth Engine.
+        if pressure:
+            lapse = gpt3_lapse_rate([p[0] for p in path], [p[1] for p in path], time)
+            val = self.ee.List([time, pressure, path, lapse]).unzip()
+        else:
+            val = self.ee.List([time, [0] * len(time), path, [0] * len(time)]).unzip()
 
         def runComputation4Chunk(i, val):
             """
@@ -285,8 +290,8 @@ class GP_pressurePath(GEE_Service):
                 accounting for temperature variation and geopotential height from ERA5.
 
                 Physical constants from standard atmosphere:
-                - Lb: Temperature lapse rate (-6.5 K/km, or varying with season and
-                  latitude for altitudeFormula="virtual")
+                - Lb: Temperature lapse rate (-6.5 K/km, or the GPT3 lapse rate of the
+                  point and day for altitudeFormula="virtual")
                 - R: Universal gas constant (8.31432 J/mol/K)
                 - g0: Standard gravity (9.80665 m/s²)
                 - M: Molar mass of dry air (0.0289644 kg/mol)
@@ -303,8 +308,7 @@ class GP_pressurePath(GEE_Service):
                     ft.get("pressure"),
                     im,
                     im.select("geopotential").divide(9.80665),
-                    ft.geometry().coordinates().getNumber(1),
-                    ft.get("system:time_start"),
+                    ft.get("lapse"),
                     altitudeFormula,
                 ).rename("altitude")
 

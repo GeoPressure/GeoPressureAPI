@@ -67,8 +67,8 @@ def pressurePath(request):
         - dataset: "single-levels" (default), "land", or "both". "land" and "both"
           must not be used when altitude is needed -- ERA5-LAND surface_pressure is
           not hydrostatically consistent with ERA5-LAND orography.
-        - altitudeFormula: "virtual" (default; 2 m virtual temperature and a lapse rate
-          varying with season and latitude, as GeoPressureR) or "standard" (2 m
+        - altitudeFormula: "virtual" (default; 2 m virtual temperature and the GPT3
+          lapse rate, as GeoPressureR) or "standard" (2 m
           temperature, -6.5 K/km; the formula used until 2026)
         - workers: Number of processing chunks (default: 10)
 

@@ -111,7 +111,7 @@ Content-Type: application/json
 
 Returns ERA5 surface pressure at one location, either over a time range or at the timestamps of a geolocator timeseries (which also returns its altitude). `dataset="single-levels"` is the default and retains locations over water. With `dataset="land"`, ocean locations are moved to the nearest ERA5-Land pixel within 1000 km.
 
-Altitude defaults to `altitudeFormula="virtual"`, using the same humidity correction and seasonal, latitude-dependent lapse rate as [`/pressurePath/`](#altitude-formula) and GeoPressureR, based on the [altitude validation](https://github.com/GeoPressure/altitude-validation). `altitudeFormula="standard"` retains the previous temperature profile. Use `dataset="single-levels"` for altitude because ERA5-Land pressure and orography are inconsistent.
+Altitude defaults to `altitudeFormula="virtual"`, using the same humidity correction and GPT3 lapse rate as [`/pressurePath/`](#altitude-formula) and GeoPressureR, based on the [altitude validation](https://github.com/GeoPressure/altitude-validation). `altitudeFormula="standard"` retains the previous temperature profile. Use `dataset="single-levels"` for altitude because ERA5-Land pressure and orography are inconsistent.
 
 ### Request
 
@@ -236,7 +236,7 @@ Extracts ERA5 variables at each `(lon, lat, time)` of a path and, if geolocator 
 
 `altitude` is computed with the barometric formula, taking the reference level from ERA5 at the location and hour of each point (surface pressure, 2 m temperature and orography). `altitudeFormula` sets the temperature profile of the air column above it:
 
-- `"virtual"` (default): 2 m virtual temperature, which accounts for humidity (computed from `dewpoint_temperature_2m`), and a lapse rate varying with season and latitude, from −6.6 K/km in the tropics to about −3 K/km in a mid-latitude winter (capped at −2 K/km). The standard column is too cold, so it underestimates flight altitude by 1–1.5% of the height above the ground. Against 648 radiosonde stations, over the heights birds fly, `"virtual"` reduces the bias from −11.9 m to −2.3 m and the mean absolute error from 16.4 m to 13.0 m, and leaves the altitude on the ground unchanged. It is the formula of [`pressure_to_altitude()`](https://github.com/GeoPressure/GeoPressureR/blob/main/R/pressure_to_altitude.R) in GeoPressureR.
+- `"virtual"` (default): 2 m virtual temperature, which accounts for humidity (computed from `dewpoint_temperature_2m`), and the lapse rate of the [GPT3](https://doi.org/10.1007/s00190-017-1066-2) empirical troposphere model at the point and day (a mean, annual and semi-annual cycle on a 1° grid, interpolated bilinearly). The standard column is too cold, so it underestimates flight altitude. Against 629 radiosonde stations, at 2400 m above the ground `"virtual"` reduces the bias from −30.9 m to −6.4 m and the median absolute error from 29.8 m to 21.2 m, and it leaves the altitude on the ground unchanged. It is the formula of [`pressure_to_altitude()`](https://github.com/GeoPressure/GeoPressureR/blob/main/R/pressure_to_altitude.R) in GeoPressureR ≥ 3.7.0, and gives the same altitude to within 0.1 m.
 - `"standard"`: 2 m temperature and the standard lapse rate of −6.5 K/km, the formula used until 2026.
 
 See the [altitude validation report](https://geopressure.github.io/altitude-validation/) for details.
@@ -326,7 +326,7 @@ Each folder (`map/`, `timeseries/`, `elevationPath/`, `pressurePath/`) is a stan
 
 A push to `main` deploys each folder as it is, so a function can only import files inside its own folder.
 
-The virtual formula and its fitted coefficients are defined in the root `altitude.py`. `pressurePath/` and `timeseries/` each carry an identical copy, because a function cannot import from outside its folder. After editing `altitude.py`, copy it into both folders; `tests/test_altitude_copies.py` fails while the copies differ. Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
+The virtual formula is defined in the root `altitude.py`, which computes the GPT3 lapse rate of each point in Python from `gpt3_1_lapse_rate.csv.gz` (the lapse-rate columns of [gpt3_1.grd](https://vmf.geo.tuwien.ac.at/codes/gpt3_1.grd), K/km) and passes it to Earth Engine. `pressurePath/` and `timeseries/` each carry an identical copy of both files, because a function cannot import from outside its folder. After editing either file, copy it into both folders; `tests/test_altitude_copies.py` fails while the copies differ. Run the offline tests with `python3 -m unittest tests.test_timeseries_altitude tests.test_altitude_copies`. Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
 
 Each function authenticates to Earth Engine with a service account read from two environment variables:
 
