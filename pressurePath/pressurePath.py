@@ -16,7 +16,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from GEE_API_server import GEE_Service
-from altitude import ALTITUDE_FORMULAS, gpt3_lapse_rate, pressure_to_altitude
+from altitude import ALTITUDE_FORMULAS, era5_grid_snap, gpt3_lapse_rate, pressure_to_altitude
 
 # Get number of CPU cores for parallel processing
 numCores = os.cpu_count()
@@ -224,11 +224,18 @@ class GP_pressurePath(GEE_Service):
 
         # Prepare data arrays - use dummy pressure and lapse rate if no pressure is given.
         # The GPT3 lapse rate is computed here, per point, rather than in Earth Engine.
+        # Each point is sampled at the centre of its ERA5 cell, as GeoPressureR does (see
+        # era5_grid_snap); "both" mixes the 0.25 and 0.1 degree grids and keeps the point itself.
+        # The lapse rate uses the point itself.
+        if dataset.lower() in ("single-levels", "land"):
+            sample_path = [era5_grid_snap(p[0], p[1], dataset.lower()) for p in path]
+        else:
+            sample_path = path
         if pressure:
             lapse = gpt3_lapse_rate([p[0] for p in path], [p[1] for p in path], time)
-            val = self.ee.List([time, pressure, path, lapse]).unzip()
+            val = self.ee.List([time, pressure, sample_path, lapse]).unzip()
         else:
-            val = self.ee.List([time, [0] * len(time), path, [0] * len(time)]).unzip()
+            val = self.ee.List([time, [0] * len(time), sample_path, [0] * len(time)]).unzip()
 
         def runComputation4Chunk(i, val):
             """

@@ -55,6 +55,23 @@ def gpt3_lapse_rate(lon, lat, time):
     return out
 
 
+def era5_grid_snap(lon, lat, dataset):
+    """Centre of the ERA5 cell holding a position, as GeoPressureR's era5_grid_snap().
+
+    Earth Engine samples a point lying exactly on a cell edge from either neighbour, seemingly at
+    random, and a GeoPressureR map at scale = 4 puts every position on a 0.25 degree edge. Sampling
+    the cell centre makes the choice deterministic and the same as GeoPressureR's ARCO backend:
+    nearest cell, longitude ties to the east, latitude ties to the north for single levels and to
+    the south for ERA5-Land. Longitude is wrapped to [-180, 180).
+    """
+    land = dataset == "land"
+    res = 0.1 if land else 0.25
+    # round() removes floating-point noise so that exact ties follow the rule above
+    lon = math.floor(round(lon / res + 0.5, 6)) * res
+    lat = (math.ceil(round(lat / res - 0.5, 6)) if land else math.floor(round(lat / res + 0.5, 6))) * res
+    return [(lon + 180) % 360 - 180, lat]
+
+
 def pressure_to_altitude(ee, pressure, image, elevation, lapse, formula="virtual"):
     """Convert pressure (Pa) to altitude (m) using matched ERA5 fields.
 

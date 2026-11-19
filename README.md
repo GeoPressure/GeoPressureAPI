@@ -21,6 +21,7 @@ Please [file an issue](https://github.com/GeoPressure/GeoPressureAPI/issues/new)
 - **Requests:** `POST` with a JSON body (`Content-Type: application/json`). The base URL answers with a `307` redirect to the service, so clients must follow redirects (e.g. `curl -L`).
 - **Units:** time as [UNIX timestamps](https://en.wikipedia.org/wiki/Unix_time) in seconds, pressure in Pa, coordinates in WGS84 degrees, distances and altitudes in m.
 - **Time matching:** each timestamp is paired with the closest ERA5 hour within ±1 h.
+- **Grid cell:** `/pressurePath/` and `/timeseries/` sample each position at the centre of the ERA5 cell holding it: the nearest grid point, with ties going east, and north (single levels) or south (ERA5-Land). GeoPressureR's ARCO backend uses the same rule. A point exactly on a cell edge, such as every position of a GeoPressureR map at `scale = 4`, would otherwise be sampled from either neighbour at random.
 - **Success:** `{"status": "success", "taskID": ..., "data": {...}}`. The fields documented below are inside `data`.
 - **Error:** HTTP `400` with `{"status": "error", "taskID": ..., "errorMessage": ..., "advice": ...}`.
 
@@ -326,7 +327,7 @@ Each folder (`map/`, `timeseries/`, `elevationPath/`, `pressurePath/`) is a stan
 
 A push to `main` deploys each folder as it is, so a function can only import files inside its own folder.
 
-The virtual formula is defined in the root `altitude.py`, which computes the GPT3 lapse rate of each point in Python from `gpt3_1_lapse_rate.csv.gz` (the lapse-rate columns of [gpt3_1.grd](https://vmf.geo.tuwien.ac.at/codes/gpt3_1.grd), K/km) and passes it to Earth Engine. `pressurePath/` and `timeseries/` each carry an identical copy of both files, because a function cannot import from outside its folder. After editing either file, copy it into both folders; `tests/test_altitude_copies.py` fails while the copies differ. Run the offline tests with `python3 -m unittest tests.test_timeseries_altitude tests.test_altitude_copies`. Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
+The virtual formula and the ERA5 cell rule (`era5_grid_snap()`) are defined in the root `altitude.py`, which computes the GPT3 lapse rate of each point in Python from `gpt3_1_lapse_rate.csv.gz` (the lapse-rate columns of [gpt3_1.grd](https://vmf.geo.tuwien.ac.at/codes/gpt3_1.grd), K/km) and passes it to Earth Engine. `pressurePath/` and `timeseries/` each carry an identical copy of both files, because a function cannot import from outside its folder. After editing either file, copy it into both folders; `tests/test_altitude_copies.py` fails while the copies differ. Run the offline tests with `python3 -m unittest tests.test_timeseries_altitude tests.test_altitude_copies tests.test_era5_grid_snap`. Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
 
 Each function authenticates to Earth Engine with a service account read from two environment variables:
 
