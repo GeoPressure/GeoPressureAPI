@@ -324,14 +324,9 @@ Expect **~3 m for relative altitude changes at a fixed location** and **~10 m me
 
 Each folder (`map/`, `timeseries/`, `elevationPath/`, `pressurePath/`) is a standalone [Google Cloud Function](https://cloud.google.com/functions) (Python, `functions-framework`) with its own `requirements.txt`. The entry point has the same name as the folder (e.g. `pressurePath`).
 
-The virtual formula and its fitted coefficients are defined once in `altitude.py`, shared by `pressurePath` and `timeseries`. Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
+A push to `main` deploys each folder as it is, so a function can only import files inside its own folder.
 
-Stage a function before deployment so its source includes the shared module:
-
-```bash
-python scripts/prepare_function.py pressurePath /tmp/pressurePath-source
-# Use /tmp/pressurePath-source as the deployment source directory.
-```
+The virtual formula and its fitted coefficients are defined in the root `altitude.py`. `pressurePath/` and `timeseries/` each carry an identical copy, because a function cannot import from outside its folder. After editing `altitude.py`, copy it into both folders; `tests/test_altitude_copies.py` fails while the copies differ. Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
 
 Each function authenticates to Earth Engine with a service account read from two environment variables:
 
@@ -341,7 +336,7 @@ Each function authenticates to Earth Engine with a service account read from two
 To run one locally:
 
 ```bash
-cd pressurePath && pip install -r requirements.txt && PYTHONPATH=.. functions-framework --target=pressurePath
+cd pressurePath && pip install -r requirements.txt && functions-framework --target=pressurePath
 ```
 
 `map` uses the standard Earth Engine endpoint; the other services use the high-volume endpoint. The [Test Server](.github/workflows/test-server.yml) workflow calls the live endpoints every 12 hours.
