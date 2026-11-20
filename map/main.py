@@ -14,6 +14,7 @@ import os
 import tempfile
 
 from map import *
+from provenance import HEADER, HEADER_VALUE
 
 # Configuration
 highVolumeEndpoint = False  # Fixed typo: was "hightVolumeEndpoint"
@@ -68,16 +69,18 @@ def map(request):
         - margin (float): Altitude tolerance in meters (default: 30)
         - includeMask (bool): Include altitude probability mask (default: True)
         - maskThreshold (float): Probability threshold for masking (default: 0.9)
+        - includeMaskSplit (bool): Add probAbove and probBelow bands (default: False)
 
     Response Format:
-        Success: {"status": "success", "taskID": timestamp, "data": {...}}
-        Error: {"status": "error", "taskID": timestamp, "errorMessage": "...", "advice": "..."}
+        Success: {"status": "success", "taskID": timestamp, "data": {...}, "provenance": {...}}
+        Error: {"status": "error", "taskID": timestamp, "errorMessage": "...", "advice": "...", "provenance": {...}}
     """
     # Default CORS headers for cross-origin requests
     default_headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST,OPTIONS",
         "Access-Control-Allow-Headers": "Accept, Content-Type",
+        HEADER: HEADER_VALUE,
     }
 
     # Handle preflight OPTIONS request for CORS

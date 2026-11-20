@@ -14,6 +14,7 @@ import os
 import tempfile
 
 from timeseries import *
+from provenance import HEADER, HEADER_VALUE
 
 # Configuration
 highVolumeEndpoint = True  # Fixed typo: was "hightVolumeEndpoint"
@@ -72,14 +73,15 @@ def timeseries(request):
         - altitudeFormula (str): "virtual" (default) or "standard"
 
     Response Format:
-        Success: {"status": "success", "taskID": timestamp, "data": {...}}
-        Error: {"status": "error", "taskID": timestamp, "errorMessage": "...", "advice": "..."}
+        Success: {"status": "success", "taskID": timestamp, "data": {...}, "provenance": {...}}
+        Error: {"status": "error", "taskID": timestamp, "errorMessage": "...", "advice": "...", "provenance": {...}}
     """
     # Default CORS headers for cross-origin requests
     default_headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST,OPTIONS",
         "Access-Control-Allow-Headers": "Accept, Content-Type",
+        HEADER: HEADER_VALUE,
     }
 
     # Handle preflight OPTIONS request for CORS

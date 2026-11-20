@@ -16,6 +16,7 @@ import os
 
 from GEE_API_server import GEE_Service
 from altitude import ALTITUDE_FORMULAS, era5_grid_snap, gpt3_lapse_rate, pressure_to_altitude
+from provenance import Era5LastHours, add_provenance, altitude_group, era5_group, era5_last_hours, era5_unavailable
 
 
 
@@ -60,6 +61,12 @@ class GP_timeseries_v2(GEE_Service):
     - Automatic land/ocean detection with nearest land interpolation
     - CSV export functionality
     """
+
+    def __init__(self, service_account, apiKeyFile, highvolume=False):
+        super(GP_timeseries_v2, self).__init__(service_account, apiKeyFile, highvolume)
+        # Last available hour of each ERA5 collection, re-read every 6 h: requests past it
+        # get HTTP 416, and it is reported in provenance
+        self.lastHours = Era5LastHours(lambda: era5_last_hours(self.ee))
 
     def boundingTimeCollection(self, timeStart, timeEnd, coordinates, dataset="single-levels"):
         """
@@ -319,6 +326,12 @@ class GP_timeseries_v2(GEE_Service):
             return (lon, lat, 0, False)
 
     def singleRequest(self, jsonObj, requestType):
+        """Handle one request and append the provenance of its response (see provenance.py)."""
+        groups = {}
+        code, headers, body = self._singleRequest(jsonObj, requestType, groups)
+        return code, headers, add_provenance(body, groups)
+
+    def _singleRequest(self, jsonObj, requestType, groups):
         """
         Handle a single API request for timeseries extraction.
 
@@ -410,7 +423,17 @@ class GP_timeseries_v2(GEE_Service):
             timeStart = timeStart * 1000
             timeEnd = timeEnd * 1000
 
+        lastERA5 = self.lastHours.get(dataset)
+        groups["era5"] = era5_group(dataset, lastERA5, "centre")
+        if informedTimeSeries:
+            groups["altitude"] = altitude_group(altitudeFormula)
+
         try:
+            # Reject times past the last available ERA5 hour, as /map/ does
+            lastTime = max(time) * 1000 if informedTimeSeries else timeEnd
+            if lastERA5 is not None and lastTime > lastERA5:
+                return era5_unavailable(timeStamp, dataset, lastERA5)
+
             # Validate and adjust coordinates if necessary
             dist = 0
             if dataset == "land":

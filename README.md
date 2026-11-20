@@ -21,9 +21,62 @@ Please [file an issue](https://github.com/GeoPressure/GeoPressureAPI/issues/new)
 - **Requests:** `POST` with a JSON body (`Content-Type: application/json`). The base URL answers with a `307` redirect to the service, so clients must follow redirects (e.g. `curl -L`).
 - **Units:** time as [UNIX timestamps](https://en.wikipedia.org/wiki/Unix_time) in seconds, pressure in Pa, coordinates in WGS84 degrees, distances and altitudes in m.
 - **Time matching:** each timestamp is paired with the closest ERA5 hour within ±1 h.
-- **Grid cell:** `/pressurePath/` and `/timeseries/` sample each position at the centre of the ERA5 cell holding it: the nearest grid point, with ties going east, and north (single levels) or south (ERA5-Land). GeoPressureR's ARCO backend uses the same rule. A point exactly on a cell edge, such as every position of a GeoPressureR map at `scale = 4`, would otherwise be sampled from either neighbour at random.
-- **Success:** `{"status": "success", "taskID": ..., "data": {...}}`. The fields documented below are inside `data`.
-- **Error:** HTTP `400` with `{"status": "error", "taskID": ..., "errorMessage": ..., "advice": ...}`.
+- **Grid cell:** `/pressurePath/` and `/timeseries/` sample each position, and `/map/` each pixel centre, at the centre of the ERA5 cell holding it: the nearest grid point, with ties going east, and north (single levels and `"both"`) or south (ERA5-Land). GeoPressureR's ARCO backend uses the same rule. A point exactly on a cell edge, such as every position or pixel centre of a GeoPressureR map at `scale = 4`, would otherwise be sampled from either neighbour: at random for a point, and from the cell to the south-east (single levels) or north-east (ERA5-Land) for a map pixel.
+- **Success:** `{"status": "success", "taskID": ..., "data": {...}, "provenance": {...}}`. The fields documented below are inside `data`.
+- **Error:** HTTP `400` with `{"status": "error", "taskID": ..., "errorMessage": ..., "advice": ..., "provenance": {...}}`.
+- **Past the end of ERA5:** `/map/`, `/timeseries/` and `/pressurePath/` answer HTTP `416` with `{"status": "error", "taskID": ..., "errorMessage": ..., "lastERA5": ..., "provenance": {...}}` when a requested time is after the last available hour of the selected `dataset` (`lastERA5`, UNIX ms; with `"both"`, the earlier end of the two collections). Each service instance reads these last hours when it starts and again every 6 h, so it does not reject hours ERA5 has gained since.
+- **Provenance:** every JSON response ends with a `provenance` object describing the code and the data that served it (see [Provenance](#provenance)). Its `code` group is also sent, as compact JSON `{"code": {...}}`, in the `X-GeoPressure-Provenance` header of every response, including the plain-text ones.
+
+### Provenance
+
+`provenance` has the same groups on every endpoint. An endpoint leaves out the groups it does not use, and a validation error carries only `code`. No value changes from one request to the next on the same instance, so the objects of many requests can be collapsed into the distinct ones. Unknown values are `null`, which means the same as a missing key. Timestamps are ISO 8601 UTC.
+
+| Group | Field | Description |
+| ----- | ----- | ----------- |
+| `code` | `commit` | Git commit the deployment was built from (`GIT_COMMIT`, set at deploy) |
+| | `deployedAt` | Deploy time (`DEPLOYED_AT`, set at deploy) |
+| | `service`, `revision` | Cloud Run service and revision (`K_SERVICE`, `K_REVISION`) |
+| | `sourceHash` | First 12 hex digits of the SHA-256 of the function folder's `*.py`, `requirements.txt` and `*.csv.gz` files; always present |
+| | `startedAt` | When the serving instance started |
+| `era5` | `dataset` | `"single-levels"`, `"land"` or `"both"`, as queried |
+| | `collections` | Earth Engine ERA5 collections; with `"both"`, ERA5-Land first, as it takes precedence |
+| | `geopotential` | Ground level of the barometric formula, in the same order |
+| | `lastHour` | Last ERA5 hour available, as used for the `416` check (see Past the end of ERA5) |
+| | `cell` | `"centre"`: each position or pixel centre takes the ERA5 cell holding it, by the rule of Grid cell |
+| `altitude` | `formula` | `"virtual"` or `"standard"` (see [Altitude formula](#altitude-formula)); the map mask always uses `"standard"` |
+| | `lapseRate` | `"gpt3_1"` (GPT3 grid) or `"-6.5 K/km"` |
+| `dem` | `asset` | Earth Engine DEM collection |
+| | `factor` | Resolution of the DEM layer used (pixels per degree) |
+
+| Endpoint | Groups |
+| -------- | ------ |
+| `/map/` | `code`, `era5`, `altitude`, `dem` |
+| `/timeseries/` | `code`, `era5`, and `altitude` with `time` + `pressure` |
+| `/pressurePath/` | `code`, `era5`, and `altitude` with `pressure` |
+| `/elevationPath/` | `code`, `dem` |
+
+`sourceHash` needs nothing from the deployer: to check which code an endpoint serves, run `python3 provenance.py map timeseries pressurePath elevationPath` in a checkout and compare. Each endpoint has its own hash.
+
+```json
+"provenance": {
+  "code": {
+    "commit": "65a2119...",
+    "deployedAt": "2026-11-19T10:00:00Z",
+    "service": "geopressureapi-timeseries",
+    "revision": "geopressureapi-timeseries-00042-abc",
+    "sourceHash": "3f2a9c1b7d4e",
+    "startedAt": "2026-11-19T10:05:12Z"
+  },
+  "era5": {
+    "dataset": "single-levels",
+    "collections": ["ECMWF/ERA5/HOURLY"],
+    "geopotential": ["ECMWF/ERA5/HOURLY/20200101T00"],
+    "lastHour": "2026-11-12T23:00:00Z",
+    "cell": "centre"
+  },
+  "altitude": { "formula": "virtual", "lapseRate": "gpt3_1" }
+}
+```
 
 ---
 
@@ -48,6 +101,7 @@ Computes, for each `label` (e.g. a stationary period), a map of pressure mismatc
 | `maskThreshold` | `number` | | `0.9` | MSE pixels whose mask is below this value are set to `-1`; `0` disables |
 | `landDensityThreshold` | `number` | | `0` | Minimum land fraction (0–1) of an ERA5 pixel to be kept |
 | `dataset` | `string` | | `"single-levels"` | `"single-levels"`, `"land"` or `"both"` (see [§4](#4-pressure-data-along-a-path)) |
+| `includeMaskSplit` | `boolean` | | `false` | Add the `probAbove` and `probBelow` bands (see below) |
 
 ### Response
 
@@ -62,14 +116,21 @@ Computes, for each `label` (e.g. a stationary period), a map of pressure mismatc
 | `bbox` | `object` | `{W, S, E, N}` |
 | `time2GetUrls` | `number` | Time spent generating URLs (s) |
 | `includeMask`, `maskThreshold` | | Values applied |
+| `includeMaskSplit`, `bands` | | Only with `includeMaskSplit = true`: `true`, and the band names of each GeoTIFF in order |
 
-If `time` extends past the last available ERA5 hour of the selected `dataset`, the request fails with HTTP `416` and a `lastERA5` field (ms).
+If `time` extends past the last available ERA5 hour of the selected `dataset`, the request fails with HTTP `416` and a `lastERA5` field (ms) (see [Conventions](#conventions)).
 
 Each GeoTIFF contains:
 
 - **Band 1 – MSE**: [mean square error](https://en.wikipedia.org/wiki/Mean_squared_error) between geolocator and ERA5 surface pressure, after removing the mean of each (so an unknown constant altitude offset does not matter).
 - **Band 2 – Mask** _(if `includeMask`)_: proportion of measurements whose altitude, from the [barometric formula](https://en.wikipedia.org/wiki/Barometric_formula), falls within the ground elevation range of the pixel (Copernicus GLO DEM min/max) ± `margin`.
-- **Special values:** `-1` below `maskThreshold`, `-2` water / no data.
+- **Bands 3–4 (or 2–3 without the mask) – `probAbove`, `probBelow`** _(if `includeMaskSplit`)_: proportion of measurements whose altitude is above the ground range + `margin` (the bird flew, perched high or climbed during the label) and below the ground range − `margin` (sensor offset, or a valley lower than the pixel's ground). On land, mask + `probAbove` + `probBelow` = 1.
+- **Special values:** `-1` below `maskThreshold` (MSE band only), `-2` water / no data (all bands).
+
+> [!NOTE]
+> **Change of November 2026: ERA5 cell of a map pixel.** Every pixel centre of a map at `scale = 4` lies on the corner of four ERA5 cells. Until then, `/map/` took the cell to the south-east of it, while `/timeseries/`, `/pressurePath/` and GeoPressureR's ARCO backend take the cell to the north-east (see Grid cell). `/map/` now takes the same cell, for the MSE and for the mask (surface pressure, temperature and orography). Maps at `scale = 4` therefore move by one ERA5 row (0.25°) in latitude, and results computed before and after differ slightly. Maps at scales whose pixel centres are not on cell edges (e.g. `scale = 10` with single levels) are unchanged. ERA5-Land maps at `scale = 10` take the cell to the south-east instead of the north-east. A response made after the change has `provenance.era5.cell = "centre"`; one made before has no `provenance`.
+
+With `includeMaskSplit` unset or `false`, the response and the GeoTIFFs are unchanged.
 
 ### Example
 
@@ -137,6 +198,8 @@ Provide either `time` + `pressure`, or `startTime` + `endTime`.
 | `distInter` | `number` | Distance the location was moved (m; `0` if on land) |
 
 The CSV has columns `time`, `pressure` (ERA5 surface pressure) and, with geolocator `pressure`, `altitude`.
+
+If `time` (or `endTime`) is after the last available ERA5 hour of the selected `dataset`, the request fails with HTTP `416` and a `lastERA5` field (ms), as on [`/map/`](#1-pressure-map).
 
 ### Example
 
@@ -267,7 +330,7 @@ See the [altitude validation report](https://geopressure.github.io/altitude-vali
 
 ### Response
 
-`data` contains one array per requested variable, plus `time` (the input timestamps) and `altitude` (if `pressure` was provided). Points where any requested value is missing (e.g. over water with `"land"`) are dropped, so arrays can be shorter than the input.
+`data` contains one array per requested variable, plus `time` (the input timestamps) and `altitude` (if `pressure` was provided). Points where any requested value is missing (e.g. over water with `"land"`) are dropped, so arrays can be shorter than the input. If `time` is after the last available ERA5 hour of the selected `dataset`, the request fails with HTTP `416` and a `lastERA5` field (ms), as on [`/map/`](#1-pressure-map).
 
 When `pressure` is provided with `dataset="land"` or `"both"`, the response has an extra top-level `warning` field.
 
@@ -323,16 +386,41 @@ Expect **~3 m for relative altitude changes at a fixed location** and **~10 m me
 
 ## Deployment
 
-Each folder (`map/`, `timeseries/`, `elevationPath/`, `pressurePath/`) is a standalone [Google Cloud Function](https://cloud.google.com/functions) (Python, `functions-framework`) with its own `requirements.txt`. The entry point has the same name as the folder (e.g. `pressurePath`).
+Each folder (`map/`, `timeseries/`, `elevationPath/`, `pressurePath/`) is a standalone [Cloud Run](https://cloud.google.com/run) service, `geopressureapi-<folder>` (lower case) in project `cloud-service-mgravey`, region `us-central1`. It is written as a Python function (`functions-framework`, entry point named after the folder, e.g. `pressurePath`) with its own `requirements.txt`. `https://glp.mgravey.com/GeoPressure/v2/<endpoint>/` redirects (307) to the service URL.
 
-A push to `main` deploys each folder as it is, so a function can only import files inside its own folder.
+**Merging to `main` deploys.** Every push to `main` of GeoPressure/GeoPressureAPI starts four Cloud Build triggers, one per folder, whatever files changed. Each one:
 
-The virtual formula and the ERA5 cell rule (`era5_grid_snap()`) are defined in the root `altitude.py`, which computes the GPT3 lapse rate of each point in Python from `gpt3_1_lapse_rate.csv.gz` (the lapse-rate columns of [gpt3_1.grd](https://vmf.geo.tuwien.ac.at/codes/gpt3_1.grd), K/km) and passes it to Earth Engine. `pressurePath/` and `timeseries/` each carry an identical copy of both files, because a function cannot import from outside its folder. After editing either file, copy it into both folders; `tests/test_altitude_copies.py` fails while the copies differ. Run the offline tests with `python3 -m unittest tests.test_timeseries_altitude tests.test_altitude_copies tests.test_era5_grid_snap`. Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
+1. builds an image from its folder only, with Google Cloud buildpacks (`pack build --path=<folder>`, `GOOGLE_FUNCTION_TARGET=<folder>`);
+2. pushes it to `us-central1-docker.pkg.dev/cloud-service-mgravey/cloud-run-source-deploy/geopressureapi/geopressureapi-<folder>:<commit>`;
+3. runs `gcloud run services update geopressureapi-<folder> --image=…:<commit>`, which labels the service `commit-sha=<commit>`.
+
+So a function can only import files inside its own folder. If a build fails, the previous revision keeps serving. To check a deploy after a merge:
+
+```bash
+gcloud builds list --project cloud-service-mgravey --limit 4
+```
+
+All four builds of the merge commit should be `SUCCESS`. Then compare the [`provenance.code`](#provenance) of each endpoint with the merged code (`sourceHash`, and `commit` once the triggers set it):
+
+```bash
+python3 provenance.py map timeseries pressurePath elevationPath
+```
+
+The virtual formula and the ERA5 cell rule (`era5_grid_snap()`) are defined in the root `altitude.py`, which computes the GPT3 lapse rate of each point in Python from `gpt3_1_lapse_rate.csv.gz` (the lapse-rate columns of [gpt3_1.grd](https://vmf.geo.tuwien.ac.at/codes/gpt3_1.grd), K/km) and passes it to Earth Engine. `pressurePath/` and `timeseries/` each carry an identical copy of both files, because a function cannot import from outside its folder. After editing either file, copy it into both folders; `tests/test_altitude_copies.py` fails while the copies differ. In the same way, each of the four folders carries a copy of the root `provenance.py`, which builds the [`provenance`](#provenance) field; `tests/test_provenance.py` fails while the copies differ. Run the offline tests with `python3 -m unittest tests.test_timeseries_altitude tests.test_altitude_copies tests.test_era5_grid_snap tests.test_provenance` (the `/map/` request tests also need `numpy`). Map altitude masks retain the standard formula until the cost of virtual temperature on full maps has been benchmarked.
 
 Each function authenticates to Earth Engine with a service account read from two environment variables:
 
 - `GEE_API_ADDRESS`: service account email
 - `GEE_API_KEY`: service account private key
+
+On Cloud Run both are [Secret Manager](https://cloud.google.com/secret-manager) references on each service, and `gcloud run services update` keeps them from one deploy to the next.
+
+Two optional variables fill `provenance.code` (see [Provenance](#provenance)):
+
+- `GIT_COMMIT`: full SHA of the deployed commit. The service label `commit-sha` is not visible inside the container, so the Deploy step of each trigger has to set it, with `--update-env-vars=GIT_COMMIT=$COMMIT_SHA`.
+- `DEPLOYED_AT`: deploy time, ISO 8601 UTC. Cloud Build has no substitution for the time, so it is unset by default (`null`). The deploy time is the creation time of the revision named in `provenance.code.revision`.
+
+Cloud Run sets `K_SERVICE` and `K_REVISION`.
 
 To run one locally:
 

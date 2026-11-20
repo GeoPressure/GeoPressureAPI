@@ -14,6 +14,7 @@ import json
 import math
 
 from GEE_API_server import GEE_Service
+from provenance import DEM_PERCENTILE, add_provenance, dem_factors, dem_group
 
 
 def printErrorMessage(task_id, errorMessage, adviceMessage="Double check the inputs."):
@@ -68,6 +69,9 @@ class GP_elevationPath(GEE_Service):
         """
         super(GP_elevationPath, self).__init__(service_account, apiKeyFile, highvolume)
 
+        # Layers of the DEM collection, to report the one a request uses (provenance)
+        self.demFactors = dem_factors(self.ee, DEM_PERCENTILE)
+
     def getElevationAlongPath(self, path, distanceSampling, dataScale, percentileArray):
         """
         Extract elevation profiles along a specified path using DEM data.
@@ -112,9 +116,6 @@ class GP_elevationPath(GEE_Service):
             .sort("factor")
             .first()
         )
-
-        # Debug: Print selected DEM info (remove in production)
-        print(elevation_image.getInfo())
 
         # Convert path to Earth Engine LineString and extract coordinates
         line_points = self.ee.Geometry.LineString(path).coordinates()
@@ -241,6 +242,12 @@ class GP_elevationPath(GEE_Service):
         }
 
     def singleRequest(self, jsonObj, requestType):
+        """Handle one request and append the provenance of its response (see provenance.py)."""
+        groups = {}
+        code, headers, body = self._singleRequest(jsonObj, requestType, groups)
+        return code, headers, add_provenance(body, groups)
+
+    def _singleRequest(self, jsonObj, requestType, groups):
         """
         Handle a single API request for elevation path analysis.
 
@@ -330,6 +337,8 @@ class GP_elevationPath(GEE_Service):
                 return printErrorMessage(
                     timeStamp, "Percentile should be an array of numbers."
                 )
+
+        groups["dem"] = dem_group(DEM_PERCENTILE, self.demFactors, scale)
 
         try:
             # Process the elevation extraction request

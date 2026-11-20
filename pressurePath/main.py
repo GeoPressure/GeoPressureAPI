@@ -14,6 +14,7 @@ import os
 import tempfile
 
 from pressurePath import *
+from provenance import HEADER, HEADER_VALUE
 
 # Configuration
 highVolumeEndpoint = True  # Fixed typo: was "hightVolumeEndpoint"
@@ -73,15 +74,16 @@ def pressurePath(request):
         - workers: Number of processing chunks (default: 10)
 
     Response Format:
-        Success: {"status": "success", "taskID": timestamp, "data": {...}}
+        Success: {"status": "success", "taskID": timestamp, "data": {...}, "provenance": {...}}
                  plus "warning" when altitude was computed from "land"/"both"
-        Error: {"status": "error", "taskID": timestamp, "errorMessage": "...", "advice": "..."}
+        Error: {"status": "error", "taskID": timestamp, "errorMessage": "...", "advice": "...", "provenance": {...}}
     """
     # Default CORS headers for cross-origin requests
     default_headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST,OPTIONS",
         "Access-Control-Allow-Headers": "Accept, Content-Type",
+        HEADER: HEADER_VALUE,
     }
 
     # Handle preflight OPTIONS request for CORS

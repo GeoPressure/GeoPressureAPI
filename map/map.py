@@ -34,9 +34,34 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy
 
 from GEE_API_server import GEE_Service
+from provenance import (
+    DEM_MINMAX, Era5LastHours, add_provenance, altitude_group, dem_factor, dem_group, era5_group,
+    era5_last_hours, era5_unavailable, startup_info,
+)
 
 # Get number of CPU cores for parallel processing
 numCores = os.cpu_count()
+
+# Shift (degrees) applied to ERA5 before it is sampled on the map grid; see era5CellShift()
+CELL_EPSILON = 1e-6
+
+
+def era5CellShift(dataset):
+    """
+    Translation (dlon, dlat), in degrees, that makes each map pixel take the ERA5 cell
+    era5_grid_snap() picks for the pixel centre, as /timeseries/, /pressurePath/ and GeoPressureR
+    do.
+
+    The centre of every pixel of a map at scale = 4 lies on the corner of four ERA5 cells (0.25
+    degree grid), and at scale = 10 on the corner of four ERA5-Land cells (0.1 degree grid).
+    Earth Engine then takes the cell to the south-east (single levels) or north-east
+    (ERA5-Land). Moving ERA5 by a tiny amount west and south (or west and north) makes the pixel
+    centre fall inside the cell to the east and north for single levels and "both", or east and
+    south for ERA5-Land. A pixel centre farther than CELL_EPSILON from a cell edge keeps its cell.
+    """
+    if str(dataset).lower() == "land":
+        return (-CELL_EPSILON, CELL_EPSILON)
+    return (-CELL_EPSILON, -CELL_EPSILON)
 
 
 def printErrorMessage(task_id, errorMessage, adviceMessage="Double check the inputs."):
@@ -93,10 +118,6 @@ class GP_map_v2(GEE_Service):
         """
         super(GP_map_v2, self).__init__(service_account, apiKeyFile, highvolume)
         
-        # Get the last available timestamp for ERA5 data to validate requests
-        self.endERA5 = 1
-        self.endERA5_land = 1
-        self.endERA5_single = 1
        # Load reference geopotential and DEM data
         geoPotLand = self.ee.Image(
             "projects/earthimages4unil/assets/PostDocProjects/rafnuss/Geopot_ERA5"
@@ -148,23 +169,15 @@ class GP_map_v2(GEE_Service):
         self.era5_land = era5_land
         self.era5_single = era5_single
 
-        # Last available timestamp, per dataset. The availability check has to match
-        # the collection that is actually queried: the two collections do not end at
-        # the same date, so gating everything on Land either rejects a
-        # single-levels request that could be served, or lets one through that
-        # returns empty maps.
-        self.endERA5_land = (
-            self.era5_land.filterDate("2024", "2100")
-            .aggregate_max("system:time_start")
-            .getInfo()
-        )
-        self.endERA5_single = (
-            self.era5_single.filterDate("2024", "2100")
-            .aggregate_max("system:time_start")
-            .getInfo()
-        )
-        # "both" joins the two collections, so it ends with the earlier of the two.
-        self.endERA5 = min(self.endERA5_land, self.endERA5_single)
+        # Last available timestamp, per dataset, re-read every 6 h. The availability
+        # check has to match the collection that is actually queried: the two
+        # collections do not end at the same date, so gating everything on Land either
+        # rejects a single-levels request that could be served, or lets one through
+        # that returns empty maps. "both" ends with the earlier of the two.
+        # Read with the DEM layer factors in a single Earth Engine call.
+        hours, self.demFactors = startup_info(self.ee, DEM_MINMAX)
+        self.lastHours = Era5LastHours(lambda: era5_last_hours(self.ee), initial=hours)
+        # self.demFactors: layers of the DEM collection, to pick the one a request uses
 
     def getEndERA5(self, dataset):
         """
@@ -174,13 +187,9 @@ class GP_map_v2(GEE_Service):
             dataset (str): "land", "single-levels" or "both"
 
         Returns:
-            int: UNIX timestamp in milliseconds
+            int: UNIX timestamp in milliseconds, or None if unknown
         """
-        if str(dataset).lower() == "single-levels":
-            return self.endERA5_single
-        if str(dataset).lower() == "land":
-            return self.endERA5_land
-        return self.endERA5
+        return self.lastHours.get(dataset)
 
 
     def getMSE_Map(
@@ -200,6 +209,7 @@ class GP_map_v2(GEE_Service):
         maskThreshold=0.9,
         dataset="single-levels",
         landDensityThreshold=0,
+        includeMaskSplit=False,
     ):
         """
         Generate MSE-based probability maps for geolocator analysis.
@@ -220,6 +230,7 @@ class GP_map_v2(GEE_Service):
             margin (float): Altitude tolerance margin in meters (default: 30)
             maskThreshold (float): Probability threshold for masking (default: 0.9)
             landDensityThreshold (float): Minimum land-density threshold (default: 0)
+            includeMaskSplit (bool): Add the probAbove and probBelow bands (default: False)
             
         Returns:
             dict: Contains GeoTIFF URLs, metadata, and processing information
@@ -276,6 +287,31 @@ class GP_map_v2(GEE_Service):
                 hours.add(floor_hour * 1000)
                 hours.add((floor_hour + 3600) * 1000)
             return sorted(hours)
+
+        # Bands of each GeoTIFF, in order
+        outputBands = ["mse"] + (["probAlt"] if includeMask else [])
+        if includeMaskSplit:
+            outputBands += ["probAbove", "probBelow"]
+
+        # DEM layer (per-pixel min and max ground elevation) matching the map scale: the
+        # finest layer when the scale is finer than all of them, otherwise the coarsest layer
+        # at least as fine as the scale. Chosen once per request, in Python when the layer
+        # factors are known.
+        demCollection = self.ee.ImageCollection(DEM_MINMAX)
+        factor = dem_factor(self.demFactors, scaleFactor)
+        if factor is not None:
+            altIm = self.ee.Image(demCollection.filter(self.ee.Filter.eq("factor", factor)).first())
+        else:
+            altIm = (
+                demCollection.filter(
+                    self.ee.Filter.gte(
+                        "factor",
+                        self.ee.Number(scaleFactor).min(demCollection.aggregate_max("factor")),
+                    )
+                )
+                .sort("factor")
+                .first()
+            )
 
         def runMSEmatch(labelFeature, hoursNeeded):
             """
@@ -337,6 +373,21 @@ class GP_map_v2(GEE_Service):
                 self.ee.Filter.inList("system:time_start", hoursNeeded)
             ).select(["surface_pressure", "temperature_2m", "geopotential"])
 
+            # Every ERA5 value of the map (MSE, and the mask's surface pressure, 2 m
+            # temperature and geopotential) comes from these images: take them from the
+            # cell era5_grid_snap() picks for each pixel centre. Done before the land mask,
+            # which keeps its own grid.
+            cellShift = era5CellShift(dataset)
+            degrees = self.ee.Projection("EPSG:4326")
+
+            def snapToCell(im):
+                # The time join below needs system:time_start, which translate() drops
+                return im.translate(cellShift[0], cellShift[1], "pixels", degrees).set(
+                    "system:time_start", im.get("system:time_start")
+                )
+
+            ERA5_pressure = ERA5_pressure.map(snapToCell)
+
             ERA5_pressure = ERA5_pressure.map(filterLand)
 
             # Match each measurement with closest ERA5 timestamp
@@ -386,21 +437,6 @@ class GP_map_v2(GEE_Service):
                 im = self.ee.Image(feature.get("bestERA5"))
                 geoPot = im.select("geopotential").divide(g0)  # Convert geopotential to altitude [m]
 
-                demCollection = self.ee.ImageCollection(
-                    "projects/earthimages4unil/assets/PostDocProjects/rafnuss/GLO_minMax_reduced"
-                )
-                # A scale finer than the finest layer would select nothing; use the finest
-                altIm = (
-                    demCollection.filter(
-                        self.ee.Filter.gte(
-                            "factor",
-                            self.ee.Number(scaleFactor).min(demCollection.aggregate_max("factor")),
-                        )
-                    )
-                    .sort("factor")
-                    .first()
-                )
-
                 # Calculate altitude using barometric formula
                 # h = (T/Lb) * ((P/P0)^(-R*Lb/g0/M) - 1) + h0
                 dh = (
@@ -425,7 +461,20 @@ class GP_map_v2(GEE_Service):
                     .toFloat()
                 )
 
-                return error.multiply(error).addBands(isPossible).rename(["mse", "probAlt"])
+                if not includeMaskSplit:
+                    return error.multiply(error).addBands(isPossible).rename(["mse", "probAlt"])
+
+                # Which side of the ground range the altitude falls on, when it falls outside.
+                # probAlt + probAbove + probBelow = 1 wherever dh is defined.
+                isAbove = dh.gt(altIm.select("DEM_max").add(margin)).toFloat()
+                isBelow = dh.lt(altIm.select("DEM_min").add(-margin)).toFloat()
+                return (
+                    error.multiply(error)
+                    .addBands(isPossible)
+                    .addBands(isAbove)
+                    .addBands(isBelow)
+                    .rename(["mse", "probAlt", "probAbove", "probBelow"])
+                )
 
             # Calculate MSE map across all measurements for this label
             aggregatedMap = self.ee.ImageCollection(era5_labelFeature.map(getError)).mean()  # Fixed typo: was "agregatedMap"
@@ -441,7 +490,10 @@ class GP_map_v2(GEE_Service):
                 )
 
             # Remove altitude band if not requested in output
-            if not includeMask:
+            if includeMaskSplit:
+                # Fix the band order: addBands(..., overwrite) above may move "mse"
+                aggregatedMap = aggregatedMap.select(outputBands)
+            elif not includeMask:
                 aggregatedMap = aggregatedMap.select("mse")
 
             # Apply ERA5 data mask and fill missing areas
@@ -524,7 +576,7 @@ class GP_map_v2(GEE_Service):
             executor.map(getEEUrl, listLabel_py)
         end_time = tm.time()
 
-        return {
+        response = {
             "format": "GEOTIFF",
             "labels": listLabel_py,
             "urls": [urls[label_id] for label_id in listLabel_py],
@@ -536,8 +588,19 @@ class GP_map_v2(GEE_Service):
             "includeMask": includeMask,
             "maskThreshold": maskThreshold,
         }
+        # Only added when requested, so that default responses are unchanged
+        if includeMaskSplit:
+            response["includeMaskSplit"] = True
+            response["bands"] = outputBands
+        return response
 
     def singleRequest(self, jsonObj, requestType):
+        """Handle one request and append the provenance of its response (see provenance.py)."""
+        groups = {}
+        code, headers, body = self._singleRequest(jsonObj, requestType, groups)
+        return code, headers, add_provenance(body, groups)
+
+    def _singleRequest(self, jsonObj, requestType, groups):
         """
         Handle a single API request for MSE map generation.
         
@@ -564,6 +627,7 @@ class GP_map_v2(GEE_Service):
             - margin: Altitude tolerance in meters (default: 30)
             - includeMask: Include altitude probability mask (default: True)
             - maskThreshold: Probability threshold for masking (default: 0.9)
+            - includeMaskSplit: Add probAbove and probBelow bands (default: False)
         """
         timeStamp = math.floor(datetime.datetime.utcnow().timestamp())
 
@@ -658,6 +722,15 @@ class GP_map_v2(GEE_Service):
         if "landDensityThreshold" in jsonObj.keys():
             landDensityThreshold = jsonObj["landDensityThreshold"]
 
+        # Optional split of the mask into above/below the ground range (off by default)
+        includeMaskSplit = False
+        if "includeMaskSplit" in jsonObj.keys():
+            includeMaskSplit = jsonObj["includeMaskSplit"]
+            if not isinstance(includeMaskSplit, bool):
+                return printErrorMessage(
+                    timeStamp, "includeMaskSplit should be true or false."
+                )
+
         # Calculate output image dimensions
         sizeLon = (E - W) * scale
         sizeLat = (N - S) * scale
@@ -690,6 +763,10 @@ class GP_map_v2(GEE_Service):
             else:
                 dataset = str(dataset_val)
 
+        groups["era5"] = era5_group(dataset, self.getEndERA5(dataset), "centre")
+        groups["altitude"] = altitude_group("standard")  # the mask uses the standard formula
+        groups["dem"] = dem_group(DEM_MINMAX, self.demFactors, scale)
+
         # Validate array lengths
         if len(time) != len(pressure) or len(time) != len(label):
             return printErrorMessage(
@@ -700,22 +777,8 @@ class GP_map_v2(GEE_Service):
             # Check if requested time range is within ERA5 data availability, for
             # the dataset that will actually be queried.
             endERA5 = self.getEndERA5(dataset)
-            if numpy.array(time).max() * 1000 > endERA5:
-                return (
-                    416,
-                    {"Content-type": "application/json"},
-                    json.JSONEncoder().encode(
-                        {
-                            "status": "error",
-                            "taskID": timeStamp,
-                            "errorMessage": "ERA5 {} data not available from {}. Request only pressure with earlier date.".format(
-                                dataset,
-                                datetime.datetime.utcfromtimestamp(endERA5 / 1000),
-                            ),
-                            "lastERA5": endERA5,
-                        }
-                    ),
-                )
+            if endERA5 is not None and numpy.array(time).max() * 1000 > endERA5:
+                return era5_unavailable(timeStamp, dataset, endERA5)
 
             # Process the map generation request
             data = self.getMSE_Map(
@@ -734,6 +797,7 @@ class GP_map_v2(GEE_Service):
                 maskThreshold,
                 dataset,
                 landDensityThreshold,
+                includeMaskSplit,
             )
             response = {"status": "success", "taskID": timeStamp, "data": data}
             return (
